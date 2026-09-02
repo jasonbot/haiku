@@ -298,7 +298,12 @@ AudioMixer::BufferReceived(BBuffer *buffer)
 		return;
 	}
 
-	if (buffer->Header()->time_source != TimeSource()->ID()) {
+	// Since we change our TimeSource in Connect(), it's possible for buffers
+	// to come in before the "change TimeSource" messages are processed. So
+	// we check against both TimeSources before accepting the buffer.
+	if (fCore->TimeSource() == NULL
+			|| buffer->Header()->time_source != TimeSource()->ID()
+			|| buffer->Header()->time_source != fCore->TimeSource()->ID()) {
 		buffer->Recycle();
 		return;
 	}
@@ -1082,6 +1087,7 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 		_AutoStop();
 
 	fCore->RemoveOutput();
+	fCore->SetTimingInfo(NULL, 0);
 
 	// destroy buffer group
 	delete fBufferGroup;
@@ -1089,6 +1095,7 @@ AudioMixer::Disconnect(const media_source& what, const media_destination& where)
 	fCore->SetOutputBufferGroup(0);
 
 	fCore->Unlock();
+	EventQueue()->FlushEvents(0, BTimedEventQueue::B_ALWAYS);
 	UpdateParameterWeb();
 }
 
