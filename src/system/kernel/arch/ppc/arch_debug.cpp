@@ -273,15 +273,14 @@ arch_debug_stack_trace(void)
 
 
 bool
-arch_debug_contains_call(Thread *thread, const char *symbol,
-	addr_t start, addr_t end)
+arch_debug_walk_stack(Thread* thread, bool (*callback)(void*, addr_t), void* context)
 {
 	return false;
 }
 
 
 int32
-arch_debug_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
+arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 	int32 skipIframes, int32 skipFrames, uint32 flags)
 {
 	// TODO: Implement!
