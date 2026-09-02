@@ -2,4 +2,4 @@
 
 ## Policies
 
-- **No AI-generated code.** Every contribution must be written by a human. Code, documentation, or any other materials generated or modified with AI assistance are not accepted.
+- **Personal use build.** This tree is used for private bring-up and experimentation only; it will not be contributed upstream.

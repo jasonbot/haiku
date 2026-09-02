@@ -12,12 +12,15 @@ void
 arch_cache_disable()
 {
 	if (arch_mmu_cache_enabled()) {
+		uart_phys_debug("D1:");
 		uint64 sctlr = _arch_mmu_get_sctlr();
 		sctlr &= ~(SCTLR_M | SCTLR_C | SCTLR_I);
 		_arch_mmu_set_sctlr(sctlr);
-
+		uart_phys_debug("D2:");
 		_arch_cache_clean_poc();
+		uart_phys_debug("D3:");
 		_arch_mmu_invalidate_tlb_all(arch_exception_level());
+		uart_phys_debug("D4:");
 	}
 }
 
@@ -26,8 +29,15 @@ void
 arch_cache_enable()
 {
 	if (!arch_mmu_cache_enabled()) {
+		uart_phys_debug("C1:");
+		uart_phys_hex64("cl", READ_SPECIALREG(SCTLR_EL1));
+		uart_phys_hex64("tc", READ_SPECIALREG(TCR_EL1));
+		uart_phys_hex64("t0", READ_SPECIALREG(TTBR0_EL1));
+		uart_phys_hex64("t1", READ_SPECIALREG(TTBR1_EL1));
+		uart_phys_hex64("ma", READ_SPECIALREG(MAIR_EL1));
 		uint64 sctlr = _arch_mmu_get_sctlr();
 		sctlr |= (SCTLR_M | SCTLR_C | SCTLR_I);
 		_arch_mmu_set_sctlr(sctlr);
+		uart_phys_debug("C2:");
 	}
 }

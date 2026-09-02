@@ -52,14 +52,14 @@ struct mmc_disk_csd {
 	// Specification Version 8.00, section 5.3
 	uint64 bits[2];
 
-	uint8 structure_version() { return bits[1] >> 54; }
+	uint8 structure_version() { return (bits[1] >> 62) & 0x3; }
 	uint8 read_bl_len() { return (bits[1] >> 8) & 0xF; }
 	uint32 c_size()
 	{
 		if (structure_version() == 0)
 			return ((bits[0] >> 54) & 0x3FF) | ((bits[1] & 0x3) << 10);
 		if (structure_version() == 1)
-			return (bits[0] >> 40) & 0x3FFFFF;
+			return ((bits[0] >> 48) & 0xFFFF) | ((bits[1] & 0x3F) << 16);
 		return ((bits[0] >> 40) & 0xFFFFFF) | ((bits[1] & 0xF) << 24);
 	}
 
@@ -169,10 +169,22 @@ mmc_block_get_geometry(mmc_disk_driver_info* info, device_geometry* geometry)
 		return B_NOT_SUPPORTED;
 	}
 
-	geometry->bytes_per_sector = 1 << csd.read_bl_len();
-	geometry->sectors_per_track = csd.c_size() + 1;
-	geometry->cylinder_count = 1 << (csd.c_size_mult() + 2);
-	geometry->head_count = 1;
+	if (csd.structure_version() < 3) {
+		// CSD version 2.0 (SDHC/SDXC) uses a different capacity layout:
+		// capacity = (C_SIZE + 1) * 512KB, with a fixed 512 byte block size.
+		if (csd.structure_version() == 1) {
+			uint64 capacity = ((uint64)csd.c_size() + 1) * 512 * 1024;
+			geometry->bytes_per_sector = 512;
+			geometry->sectors_per_track = capacity / 512;
+			geometry->cylinder_count = 1;
+			geometry->head_count = 1;
+		} else {
+			geometry->bytes_per_sector = 1 << csd.read_bl_len();
+			geometry->sectors_per_track = csd.c_size() + 1;
+			geometry->cylinder_count = 1 << (csd.c_size_mult() + 2);
+			geometry->head_count = 1;
+		}
+	}
 	geometry->device_type = B_DISK;
 	geometry->removable = true; // TODO detect eMMC which isn't
 	geometry->read_only = false; // TODO check write protect switch?
@@ -439,6 +451,8 @@ static status_t
 mmc_block_read(void* cookie, off_t position, void* buffer, size_t* _length)
 {
 	CALLED();
+	dprintf("\33[33mmmc_disk:\33[0m read: pos=%" B_PRId64 " len=%" B_PRIuSIZE
+		"\n", position, *_length);
 	mmc_disk_handle* handle = (mmc_disk_handle*)cookie;
 
 	size_t length = *_length;
@@ -458,6 +472,20 @@ mmc_block_read(void* cookie, off_t position, void* buffer, size_t* _length)
 
 	status = request.Wait(0, 0);
 	*_length = request.TransferredBytes();
+	{
+		const uint8_t* b = (const uint8_t*)buffer;
+		dprintf("\33[33mmmc_disk:\33[0m peek: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+			b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+		if (*_length >= 512) {
+			const uint8_t* t = (const uint8_t*)buffer + 448;
+			dprintf("\33[33mmmc_disk:\33[0m tail: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+				t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7],
+				t[8], t[9], t[10], t[11], t[12], t[13], t[14], t[15],
+				t[16], t[17], t[18], t[19], t[20], t[21], t[22], t[23],
+				t[24], t[25], t[26], t[27], t[28], t[29], t[30], t[31]);
+		}
+	}
 	return status;
 }
 

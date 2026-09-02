@@ -220,6 +220,9 @@ DiskBootMethod::IsBootDevice(KDiskDevice* device, bool strict)
 		case UNKNOWN_DEVICE:
 			// test if the size of the device matches
 			// (the BIOS might have given us the wrong value here, though)
+			dprintf("vfs_boot: IsBootDevice size check: size=%" B_PRId64
+				", expected=%" B_PRId64 "\n", device->Size(),
+				disk->device.unknown.size);
 			if (strict && device->Size() != disk->device.unknown.size)
 				return false;
 
@@ -233,9 +236,15 @@ DiskBootMethod::IsBootDevice(KDiskDevice* device, bool strict)
 				if (disk->device.unknown.check_sums[i].offset == -1)
 					continue;
 
-				if (compute_check_sum(device,
-						disk->device.unknown.check_sums[i].offset)
-							!= disk->device.unknown.check_sums[i].sum) {
+				dprintf("vfs_boot: checksum[%d]: offset=%" B_PRId64
+					", expected=%#x\n", (int)i,
+					disk->device.unknown.check_sums[i].offset,
+					disk->device.unknown.check_sums[i].sum);
+				uint32 sum = compute_check_sum(device,
+					disk->device.unknown.check_sums[i].offset);
+				dprintf("vfs_boot: checksum[%d]: got=%#x\n", (int)i, sum);
+				if (sum != disk->device.unknown.check_sums[i].sum) {
+					dprintf("vfs_boot: checksum[%d] mismatch\n", (int)i);
 					return false;
 				}
 			}
@@ -403,21 +412,46 @@ get_boot_partitions(KMessage& bootVolume, PartitionStack& partitions)
 
 	bool strict = true;
 
+	// The mmc card enumeration happens asynchronously in a worker thread of
+	// the MMC bus manager. On a (forced) single-core boot this worker may not
+	// have published the boot device yet when we first scan. Re-scan a few
+	// times (with a short delay to let the worker run) before giving up.
+	int retries = 300;
+
 	while (true) {
+		dprintf("vfs_boot: get_boot_partitions scan, retries left %d, "
+			"strict %d\n", retries, strict);
+
 		KDiskDevice *device;
 		int32 cookie = 0;
-		while ((device = manager->NextDevice(&cookie)) != NULL) {
-			if (!bootMethod->IsBootDevice(device, strict))
-				continue;
-
+while ((device = manager->NextDevice(&cookie)) != NULL) {
+		dprintf("vfs_boot: checking device '%s'\n", device->Name());
+		if (bootMethod->IsBootDevice(device, strict)) {
+			dprintf("vfs_boot: boot device '%s', visiting descendants\n",
+				device->Name());
 			if (device->VisitEachDescendant(&visitor) != NULL)
 				break;
 		}
+	}
 
-		if (!partitions.IsEmpty() || !strict)
+	dprintf("vfs_boot: device scan pass complete\n");
+
+	if (!partitions.IsEmpty())
 			break;
 
+		if (!strict)
+			break;
+
+		if (retries-- > 0) {
+			snooze(100000);
+			dprintf("vfs_boot: re-running InitialDeviceScan...\n");
+			manager->InitialDeviceScan();
+			dprintf("vfs_boot: InitialDeviceScan returned\n");
+			continue;
+		}
+
 		// we couldn't find any potential boot devices, try again less strict
+		dprintf("vfs_boot: retries exhausted, falling back to non-strict\n");
 		strict = false;
 	}
 

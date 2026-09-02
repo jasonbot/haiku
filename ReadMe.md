@@ -1,3 +1,16 @@
+# Haiku on Pinebook Pro
+
+I want Pinebook Pro to run Haiku.
+
+> [!CAUTION]
+> This is a persona fork of Haiku. It contains material that will not be
+> accepted as PR contributinos to the upsteam propejct as they are
+> machine-assisted, LLM-driven efforts that do not meet any reasonsable human
+> standard of quality. This is me, a hungry ghost, bullying an agent into
+> making the thing compile and run on my hardware, sustainability or
+> practivality be damned.
+
+
 Haiku
 =======================
 **[Homepage](https://www.haiku-os.org/)

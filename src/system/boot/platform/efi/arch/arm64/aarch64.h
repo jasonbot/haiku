@@ -28,6 +28,56 @@ extern "C" void _arch_cache_clean_poc(void);
 static const uint8 kInvalidExceptionLevel = 0xFFu;
 
 
+// TMP bring-up diagnostic: poke the physical debug UART (RK3399 UART2 =
+// 0xff1a0000) directly. Works with the MMU on or off. Do NOT keep upstream.
+static inline void uart_phys_debug(const char* s)
+{
+	static constexpr addr_t kUartPhys = 0xff1a0000UL;
+	while (*s) {
+		// Wait for Tx to drain (TEMT, bit 6) + bounded, mirroring the 8250
+		// driver. THRE (bit 5) never asserts on the RK3399 DesignWare UART.
+		int32 timeout = 256 * 1024;
+		while (!(((volatile uint8*)kUartPhys)[5] & 0x40)) {
+			if (--timeout == 0)
+				break;
+		}
+		((volatile uint8*)kUartPhys)[0] = *s++;
+	}
+	int32 timeout = 256 * 1024;
+	while (!(((volatile uint8*)kUartPhys)[5] & 0x40)) {
+		if (--timeout == 0)
+			break;
+	}
+}
+
+// TMP bring-up diagnostic (same as above, but no LSR/Tx-ready wait — probe
+// whether the poke mechanism or the wait loop is what stalls). TMP ONLY.
+static inline void uart_phys_emit(const char* s)
+{
+	static constexpr addr_t kUartPhys = 0xff1a0000UL;
+	while (*s)
+		((volatile uint8*)kUartPhys)[0] = *s++;
+}
+
+// TMP bring-up diagnostic: print 16 hex digits of v via raw UART pokes.
+static inline void uart_phys_hex64(const char* tag, uint64 v)
+{
+	static const char hex[] = "0123456789abcdef";
+	char buf[20];
+	int i = 0;
+	while (tag[i] && i < 7) {
+		buf[i] = tag[i];
+		++i;
+	}
+	buf[i++] = '=';
+	for (int shift = 60; shift >= 0; shift -= 4)
+		buf[i++] = hex[(v >> shift) & 0xf];
+	buf[i++] = ':';
+	buf[i] = 0;
+	uart_phys_emit(buf);
+}
+
+
 #define	AARCH64_CHECK_ACCESS(operand, address)						\
 	__asm __volatile("at	" #operand ", %0" : : "r"((uint64_t)address))
 

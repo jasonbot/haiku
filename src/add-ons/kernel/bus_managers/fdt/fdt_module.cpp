@@ -529,7 +529,7 @@ fdt_device_get_interrupt(fdt_device* dev, uint32 index,
 
 		if ((interruptCells == 1) || (interruptCells == 2)) {
 			 interruptNumber = fdt32_to_cpu(*(prop + offset));
-		} else if (interruptCells == 3) {
+		} else if ((interruptCells == 3) || (interruptCells == 4)) {
 			uint32 interruptType = fdt32_to_cpu(prop[offset + GIC_INTERRUPT_CELL_TYPE]);
 			interruptNumber = fdt32_to_cpu(prop[offset + GIC_INTERRUPT_CELL_ID]);
 

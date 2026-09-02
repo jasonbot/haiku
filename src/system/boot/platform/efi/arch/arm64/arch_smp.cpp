@@ -95,6 +95,9 @@ arch_smp_init_other_cpus(void)
 		gKernelArgs.num_cpus = 1;
 	}
 
+	// TMP bring-up: force single CPU until PSCI secondary boot is reliable
+	gKernelArgs.num_cpus = 1;
+
 	if (gKernelArgs.num_cpus < 2)
 		return;
 

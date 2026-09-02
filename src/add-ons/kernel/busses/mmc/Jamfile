@@ -13,3 +13,7 @@ KernelAddon sdhci :
 	sdhci_acpi.cpp
 	sdhci_pci.cpp
 ;
+
+KernelAddon dwmmc :
+	dwmmc.cpp
+;

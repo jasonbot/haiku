@@ -495,7 +495,7 @@ dtb_get_interrupt(const void* fdt, int node)
 	if (uint32* prop = (uint32*)fdt_getprop(fdt, node, "interrupts", NULL)) {
 		if ((interruptCells == 1) || (interruptCells == 2)) {
 			return fdt32_to_cpu(*prop);
-		} else if (interruptCells == 3) {
+		} else if ((interruptCells == 3) || (interruptCells == 4)) {
 			uint32 interruptType = fdt32_to_cpu(prop[GIC_INTERRUPT_CELL_TYPE]);
 			uint32 interruptNumber = fdt32_to_cpu(prop[GIC_INTERRUPT_CELL_ID]);
 			if (interruptType == GIC_INTERRUPT_TYPE_SPI)

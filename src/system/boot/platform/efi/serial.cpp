@@ -98,7 +98,7 @@ extern "C" void
 serial_enable(void)
 {
 	sSerialEnabled = true;
-	if ((gUART != NULL) && !gUARTSkipInit)
+	if ((gUART != NULL) && !gUARTSkipInit && gUART->Clock() != -1)
 		gUART->InitPort(kSerialBaudRate);
 }
 
