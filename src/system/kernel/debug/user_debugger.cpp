@@ -825,9 +825,19 @@ thread_hit_serious_debug_event(debug_debugger_message event,
 	status_t error = ensure_debugger_installed();
 	if (error != B_OK) {
 		Thread *thread = thread_get_current_thread();
-		dprintf("thread_hit_serious_debug_event(): Failed to install debugger: "
-			"thread: %" B_PRId32 " (%s): %s\n", thread->id, thread->name,
-			strerror(error));
+		if (event == B_DEBUGGER_MESSAGE_EXCEPTION_OCCURRED
+			&& messageSize >= (int32)sizeof(debug_exception_occurred)) {
+			const debug_exception_occurred* info
+				= (const debug_exception_occurred*)message;
+			dprintf("thread_hit_serious_debug_event(): exception: %d, signal: %d, "
+				"thread: %" B_PRId32 " (%s), debugger install failed: %s\n",
+				(int)info->exception, info->signal, thread->id, thread->name,
+				strerror(error));
+		} else {
+			dprintf("thread_hit_serious_debug_event(): Failed to install debugger: "
+				"thread: %" B_PRId32 " (%s): %s\n", thread->id, thread->name,
+				strerror(error));
+		}
 		return error;
 	}
 

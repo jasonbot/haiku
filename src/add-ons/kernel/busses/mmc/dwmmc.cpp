@@ -158,6 +158,10 @@ DwMmcBus::DwMmcBus(volatile uint32_t* registers, uint8_t irq,
 		return;
 	}
 
+	// We operate in PIO polling mode; make sure the internal DMA engine is
+	// disabled so it does not consume data from the FIFO.
+	Write(DWMCI_CTRL, Read(DWMCI_CTRL) & ~DWMCI_DMA_EN);
+
 	TRACE("DesignWare MMC controller version: %#" B_PRIx32 "\n",
 		(Read(DWMCI_VERID) >> 16) & 0xfff);
 
@@ -413,11 +417,14 @@ DwMmcBus::ExecuteCommand(uint8_t command, uint32_t argument, uint32_t* response)
 
 	Write(DWMCI_CMDARG, argument);
 	Write(DWMCI_CMD, DWMCI_CMD_CMD_INDEX(command) | cmdFlags
-		| DWMCI_CMD_START);
+		| DWMCI_CMD_USE_HOLD_REG | DWMCI_CMD_START);
 
 	status_t status = _WaitCommandComplete(1000000);
 	if (status != B_OK) {
 		ERROR("Command %d failed: %s\n", command, strerror(status));
+		// Reset the controller so the next command starts from a clean state.
+		if (_WaitReset(DWMCI_RESET_ALL) != B_OK)
+			TRACE_ALWAYS("Controller reset after command timeout failed\n");
 		goto done;
 	}
 
@@ -474,23 +481,43 @@ DwMmcBus::_TransferData(uint32_t command, uint32_t argument, uint8_t* buffer,
 	Write(DWMCI_CMDARG, argument);
 	Write(DWMCI_CMD, DWMCI_CMD_CMD_INDEX(command) | cmdFlags
 		| DWMCI_CMD_DATA_EXP | (isWrite ? DWMCI_CMD_RW : 0)
-		| DWMCI_CMD_START);
+		| DWMCI_CMD_USE_HOLD_REG | DWMCI_CMD_START);
 
-	status_t status = _WaitCommandComplete(1000000);
-	if (status != B_OK) {
-		ERROR("Data command %d failed: %s\n", command, strerror(status));
-		ClearInterrupts();
-		return status;
-	}
+	status_t status = B_OK;
 
-	// Transfer the data through the FIFO, in polling mode
+	// Transfer the data through the FIFO, in polling mode. For writes the
+	// controller needs the FIFO filled before it will finish the command, so
+	// do the data phase first and then wait for command completion.
 	if (isWrite)
 		status = _WriteFIFO(buffer, length);
 	else
 		status = _ReadFIFO(buffer, length);
 
-	if (status != B_OK)
+	if (status != B_OK) {
+		ERROR("Data phase failed for command %d: %s\n", command,
+			strerror(status));
+		// Reset the controller so the next command starts from a clean state.
+		if (_WaitReset(DWMCI_RESET_ALL) != B_OK)
+			TRACE_ALWAYS("Controller reset after data phase timeout failed\n");
 		ClearInterrupts();
+		return status;
+	}
+
+	status = _WaitCommandComplete(1000000);
+	if (status != B_OK) {
+		ERROR("Data command %d failed: %s\n", command, strerror(status));
+		if (_WaitReset(DWMCI_RESET_ALL) != B_OK)
+			TRACE_ALWAYS("Controller reset after data command timeout failed\n");
+		ClearInterrupts();
+		return status;
+	}
+
+	// Writes leave the card busy programming the flash; wait for the data
+	// line to go idle before the next command is issued.
+	if (isWrite && _WaitForIdle(200000) == B_TIMED_OUT) {
+		TRACE_ALWAYS("Data command %d: card still busy after write\n",
+			command);
+	}
 
 	// Multi-block commands keep the card streaming data until an explicit
 	// stop (CMD12). The controller only transfers the requested byte count,
@@ -619,21 +646,20 @@ DwMmcBus::_WriteFIFO(uint8_t* buffer, size_t length)
 		uint32_t status = Read(DWMCI_STATUS);
 		uint32_t fifoCount = (status >> DWMCI_FIFO_SHIFT) & DWMCI_FIFO_MASK;
 		uint32_t available = fFifoDepth - fifoCount;
-
 		if (available > 0) {
-			size_t toSend = std::min((size_t)available, wordCount - sent);
+			size_t toSend = std::min((size_t)available,
+				wordCount - sent);
 			for (size_t i = 0; i < toSend; i++)
 				Write(DWMCI_DATA, words[sent + i]);
 			sent += toSend;
 		} else {
-if (system_time() - start > 1000000) {
-			ClearInterrupts();
-			return B_TIMED_OUT;
-
+			if (system_time() - start > 1000000) {
+				ClearInterrupts();
+				return B_TIMED_OUT;
+			}
+			spin_us(10);
 		}
-		spin_us(10);
 	}
-}
 	// Wait for the data transfer to complete
 	start = system_time();
 	while (true) {
@@ -710,14 +736,39 @@ DwMmcBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 
 		void* virtualBuffer;
 		area_id mapArea = map_physical_memory("dwmmc data buffer", mapBase,
-			mapSize, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA
-			| B_KERNEL_WRITE_AREA, &virtualBuffer);
+			mapSize, B_ANY_KERNEL_ADDRESS | B_WRITE_BACK_MEMORY,
+			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &virtualBuffer);
 		if (mapArea < B_OK) {
 			result = mapArea;
 			break;
 		}
 
-		result = _TransferData(command,
+		// The IO scheduler may give us a multi-block command, but we cap each
+		// transfer to one 512-byte block. Issuing a multi-block command and
+		// then stopping it after a single block is unreliable on this
+		// controller, so switch to the single-block command when appropriate.
+		uint8_t chunkCommand = command;
+		if (toCopy == kBlockSize) {
+			if (command == SD_READ_MULTIPLE_BLOCKS)
+				chunkCommand = SD_READ_SINGLE_BLOCK;
+			else if (command == SD_WRITE_MULTIPLE_BLOCKS)
+				chunkCommand = SD_WRITE_SINGLE_BLOCK;
+		}
+
+		// Synchronise the cache for this temporary mapping before the
+		// controller touches the buffer. For writes the CPU must read the
+		// caller's data from memory; for reads the device must write to
+		// memory without stale cache lines being written back over it.
+		{
+			uint8_t* flushBase = (uint8_t*)virtualBuffer + physOffset;
+			for (size_t i = 0; i < toCopy; i += CACHE_LINE_SIZE) {
+				__asm__ __volatile__("dc civac, %0" : : "r"(flushBase + i)
+					: "memory");
+			}
+			__asm__ __volatile__("dsb ish" : : : "memory");
+		}
+
+		result = _TransferData(chunkCommand,
 			offset / (offsetAsSectors ? kBlockSize : 1),
 			(uint8_t*)virtualBuffer + physOffset, toCopy, isWrite);
 
@@ -728,9 +779,11 @@ DwMmcBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 			// to the first read; retry until the contents agree.
 			static uint8_t sVerified[512];
 			bool verified = false;
+			int32_t lastAttempt = 0;
 			for (int32_t attempt = 0; attempt < 8; attempt++) {
+				lastAttempt = attempt;
 				uint8_t* target = (uint8_t*)virtualBuffer + physOffset;
-				result = _TransferData(command,
+				result = _TransferData(chunkCommand,
 					offset / (offsetAsSectors ? kBlockSize : 1),
 					target, toCopy, false);
 				if (result != B_OK)
@@ -753,6 +806,17 @@ DwMmcBus::DoIO(uint8_t command, IOOperation* operation, bool offsetAsSectors)
 					B_PRIdOFF "\n", offset);
 				result = B_IO_ERROR;
 			}
+		}
+
+		if (result == B_OK) {
+			// Clean and invalidate the D-cache for this mapping so the caller's
+			// own mapping sees the data and any stale cache lines are removed.
+			uint8_t* flushBase = (uint8_t*)virtualBuffer + physOffset;
+			for (size_t i = 0; i < toCopy; i += CACHE_LINE_SIZE) {
+				__asm__ __volatile__("dc civac, %0" : : "r"(flushBase + i)
+					: "memory");
+			}
+			__asm__ __volatile__("dsb ish" : : : "memory");
 		}
 
 		delete_area(mapArea);

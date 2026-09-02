@@ -308,21 +308,55 @@ InodeAllocator::_TransactionListener(int32 id, int32 event, void* _inode)
 status_t
 bfs_inode::InitCheck(Volume* volume) const
 {
-	if (Magic1() != INODE_MAGIC1
-		|| !(Flags() & INODE_IN_USE)
-		|| inode_num.Length() != 1
-		// matches inode size?
-		|| (uint32)InodeSize() != volume->InodeSize()
-		// parent resides on disk?
-		|| parent.AllocationGroup() > int32(volume->AllocationGroups())
-		|| parent.AllocationGroup() < 0
-		|| parent.Start() > (1L << volume->AllocationGroupShift())
-		|| parent.Length() != 1
-		// attributes, too?
-		|| attributes.AllocationGroup() > int32(volume->AllocationGroups())
-		|| attributes.AllocationGroup() < 0
-		|| attributes.Start() > (1L << volume->AllocationGroupShift()))
+	if (Magic1() != INODE_MAGIC1) {
+		FATAL(("bfs_inode::InitCheck: magic1 mismatch: got 0x%" B_PRIx32
+			", expected 0x%" B_PRIx32 "\n", (uint32)Magic1(),
+			(uint32)INODE_MAGIC1));
 		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (!(Flags() & INODE_IN_USE)) {
+		FATAL(("bfs_inode::InitCheck: flags not in use: 0x%" B_PRIx32 "\n",
+			(uint32)Flags()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (inode_num.Length() != 1) {
+		FATAL(("bfs_inode::InitCheck: inode_num.Length() = %u, expected 1\n",
+			inode_num.Length()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if ((uint32)InodeSize() != volume->InodeSize()) {
+		FATAL(("bfs_inode::InitCheck: InodeSize() = %" B_PRId32
+			", volume->InodeSize() = %" B_PRId32 "\n", InodeSize(),
+			volume->InodeSize()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (parent.AllocationGroup() > int32(volume->AllocationGroups())
+		|| parent.AllocationGroup() < 0) {
+		FATAL(("bfs_inode::InitCheck: parent.AllocationGroup() = %" B_PRId32
+			", volume->AllocationGroups() = %" B_PRId32 "\n",
+			parent.AllocationGroup(), volume->AllocationGroups()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (parent.Start() > (1L << volume->AllocationGroupShift())
+		|| parent.Length() != 1) {
+		FATAL(("bfs_inode::InitCheck: parent.Start() = %u, Length() = %u, "
+			"ag_shift = %" B_PRId32 "\n", parent.Start(), parent.Length(),
+			volume->AllocationGroupShift()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (attributes.AllocationGroup() > int32(volume->AllocationGroups())
+		|| attributes.AllocationGroup() < 0) {
+		FATAL(("bfs_inode::InitCheck: attributes.AllocationGroup() = %" B_PRId32
+			", volume->AllocationGroups() = %" B_PRId32 "\n",
+			attributes.AllocationGroup(), volume->AllocationGroups()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
+	if (attributes.Start() > (1L << volume->AllocationGroupShift())) {
+		FATAL(("bfs_inode::InitCheck: attributes.Start() = %u, ag_shift = %"
+			B_PRId32 "\n", attributes.Start(),
+			volume->AllocationGroupShift()));
+		RETURN_ERROR(B_BAD_DATA);
+	}
 
 	if (Flags() & INODE_DELETED)
 		return B_NOT_ALLOWED;

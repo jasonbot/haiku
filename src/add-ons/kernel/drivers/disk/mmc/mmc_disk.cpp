@@ -28,7 +28,7 @@
 #include <AutoDeleter.h>
 
 
-#define TRACE_MMC_DISK
+// #define TRACE_MMC_DISK
 #ifdef TRACE_MMC_DISK
 #	define TRACE(x...) dprintf("\33[33mmmc_disk:\33[0m " x)
 #else
@@ -97,11 +97,11 @@ mmc_disk_supports_device(device_node* parent)
 		return -1;
 	}
 
-	if (deviceType == CARD_TYPE_SD)
+	if (deviceType == CARD_TYPE_SD) {
 		TRACE("SD card found, parent: %p\n", parent);
-	else if (deviceType == CARD_TYPE_SDHC)
+	} else if (deviceType == CARD_TYPE_SDHC) {
 		TRACE("SDHC card found, parent: %p\n", parent);
-	else if (deviceType == CARD_TYPE_SDIO) {
+	} else if (deviceType == CARD_TYPE_SDIO) {
 		// Ignore silently, since it is not mass storage and should be handled by other drivers
 		return 0.0;
 	} else
@@ -451,8 +451,6 @@ static status_t
 mmc_block_read(void* cookie, off_t position, void* buffer, size_t* _length)
 {
 	CALLED();
-	dprintf("\33[33mmmc_disk:\33[0m read: pos=%" B_PRId64 " len=%" B_PRIuSIZE
-		"\n", position, *_length);
 	mmc_disk_handle* handle = (mmc_disk_handle*)cookie;
 
 	size_t length = *_length;
@@ -472,20 +470,6 @@ mmc_block_read(void* cookie, off_t position, void* buffer, size_t* _length)
 
 	status = request.Wait(0, 0);
 	*_length = request.TransferredBytes();
-	{
-		const uint8_t* b = (const uint8_t*)buffer;
-		dprintf("\33[33mmmc_disk:\33[0m peek: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-			b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-			b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-		if (*_length >= 512) {
-			const uint8_t* t = (const uint8_t*)buffer + 448;
-			dprintf("\33[33mmmc_disk:\33[0m tail: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-				t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7],
-				t[8], t[9], t[10], t[11], t[12], t[13], t[14], t[15],
-				t[16], t[17], t[18], t[19], t[20], t[21], t[22], t[23],
-				t[24], t[25], t[26], t[27], t[28], t[29], t[30], t[31]);
-		}
-	}
 	return status;
 }
 

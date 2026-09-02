@@ -80,13 +80,14 @@ arm64_common_cpu_startup()
 		// drop to EL1, or the MMU-enable uses U-Boot's stale page tables.
 		arm64_mmu_setup();
 		uart_phys_debug("MS2:");
+		WRITE_SPECIALREG(CNTKCTL_EL1, 0b11);
 	}
 
 	uart_phys_debug("F0:");
 
 	WRITE_SPECIALREG(SCTLR_EL1, SCTLR_LSMAOE | SCTLR_nTLSMD
 		| SCTLR_UCI | SCTLR_SPAN | SCTLR_IESB | SCTLR_nTWE | SCTLR_nTWI
-		| SCTLR_UCT | SCTLR_DZE | SCTLR_SED | SCTLR_SA0 | SCTLR_SA);
+		| SCTLR_UCT | SCTLR_DZE | SCTLR_SED);
 
 	uart_phys_debug("F1:");
 

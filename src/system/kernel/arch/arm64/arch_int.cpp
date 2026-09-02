@@ -129,6 +129,37 @@ TableFromPa(phys_addr_t pa)
 }
 
 
+static uint32_t
+read_user_instruction(addr_t va)
+{
+	uint64_t ptPa = READ_SPECIALREG(TTBR0_EL1) & kTtbrBasePhysAddrMask;
+	int level = VMSAv8TranslationMap::CalcStartLevel(48, page_bits);
+	int tableBits = page_bits - 3;
+
+	for (int l = 0; l <= 3; l++) {
+		int shift = tableBits * (3 - l) + page_bits;
+		int index = (va >> shift) & ((1 << tableBits) - 1);
+
+		uint64_t *pte = &TableFromPa(ptPa)[index];
+		uint64_t oldPte = atomic_get64((int64*)pte);
+		int type = oldPte & kPteTypeMask;
+		uint64_t addr = oldPte & kPteAddrMask;
+
+		if (l < 3 && type == kPteTypeL012Table) {
+			ptPa = addr;
+			continue;
+		}
+		if ((l == 3 && type == kPteTypeL3Page)
+			|| (l < 3 && type == kPteTypeL12Block)) {
+			addr_t pageOffset = va & ((1UL << shift) - 1);
+			return *(uint32_t*)(KERNEL_PMAP_BASE + addr + pageOffset);
+		}
+		break;
+	}
+	return 0;
+}
+
+
 static bool
 fixup_entry(phys_addr_t ptPa, int level, addr_t va, bool wr)
 {
@@ -261,12 +292,14 @@ do_sync_handler(iframe * frame)
 	bool isUser = (frame->spsr & PSR_M_MASK) == PSR_M_EL0t;
 	bool isExec = false;
 	switch (ESR_ELx_EXCEPTION(frame->esr)) {
-		case EXCP_PC_ALIGN:
-			exceptionType = B_ALIGNMENT_EXCEPTION;
-			signalNumber = SIGBUS;
-			signalCode = BUS_ADRALN;
-			signalAddress = frame->elr;
-			break;
+	case EXCP_PC_ALIGN:
+		exceptionType = B_ALIGNMENT_EXCEPTION;
+		signalNumber = SIGBUS;
+		signalCode = BUS_ADRALN;
+		signalAddress = frame->elr;
+		dprintf("do_sync_handler: PC alignment exception at ELR=%lx, ESR=%lx\n",
+			frame->elr, frame->esr);
+		break;
 		case EXCP_INSN_ABORT_L:
 		case EXCP_INSN_ABORT:
 			isExec = true;
@@ -310,8 +343,14 @@ do_sync_handler(iframe * frame)
 				break;
 			}
 
-			if (!known)
+			if (!known) {
+				dprintf("do_sync_handler: UNHANDLED ABORT\n");
+				dprintf("do_sync_handler: unknown user data/insn abort, EC=%lx DFSC=%lx FAR=%lx ELR=%lx ESR=%lx write=%d\n",
+					ESR_ELx_EXCEPTION(frame->esr),
+					(frame->esr & ISS_DATA_DFSC_MASK),
+					frame->far, frame->elr, frame->esr, write);
 				break;
+			}
 
 			if (debug_debugger_running()) {
 				Thread* thread = thread_get_current_thread();
@@ -351,9 +390,23 @@ do_sync_handler(iframe * frame)
 			break;
 		}
 
-		case EXCP_SVC64:
-		{
-			uint32 syscall = (frame->esr & 0xffff);
+	default:
+	{
+		dprintf("do_sync_handler: unhandled synchronous exception, EC=%lx, ESR=%lx, FAR=%lx, ELR=%lx, SPSR=%lx\n",
+			ESR_ELx_EXCEPTION(frame->esr), frame->esr, frame->far, frame->elr,
+			frame->spsr);
+		uint32_t instr = read_user_instruction(frame->elr);
+		dprintf("do_sync_handler: instruction at ELR=%lx: %08x\n", frame->elr,
+			instr);
+		exceptionType = B_ALIGNMENT_EXCEPTION;
+		signalNumber = SIGBUS;
+		signalCode = BUS_ADRALN;
+		signalAddress = frame->elr;
+		break;
+	}
+	case EXCP_SVC64:
+	{
+		uint32 syscall = (frame->esr & 0xffff);
 			uint32 count = kExtendedSyscallInfos[syscall].parameter_count;
 
 			uint64_t args[20];
