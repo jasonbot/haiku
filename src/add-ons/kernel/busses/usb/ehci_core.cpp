@@ -23,243 +23,11 @@
 #define USB_MODULE_NAME	"ehci"
 
 
-device_manager_info* gDeviceManager;
-static usb_for_controller_interface* gUSB;
+extern device_manager_info* gDeviceManager;
 
 
-#define EHCI_PCI_DEVICE_MODULE_NAME "busses/usb/ehci/pci/driver_v1"
-#define EHCI_PCI_USB_BUS_MODULE_NAME "busses/usb/ehci/device_v1"
-
-
-typedef struct {
-	EHCI* ehci;
-	pci_device_module_info* pci;
-	pci_device* device;
-
-	pci_info pciinfo;
-
-	device_node* node;
-	device_node* driver_node;
-} ehci_pci_sim_info;
-
-
-//	#pragma mark -
-
-
-static status_t
-init_bus(device_node* node, void** bus_cookie)
-{
-	CALLED();
-
-	driver_module_info* driver;
-	ehci_pci_sim_info* bus;
-	device_node* parent = gDeviceManager->get_parent_node(node);
-	gDeviceManager->get_driver(parent, &driver, (void**)&bus);
-	gDeviceManager->put_node(parent);
-
-	Stack *stack;
-	if (gUSB->get_stack((void**)&stack) != B_OK)
-		return B_ERROR;
-
-	EHCI *ehci = new(std::nothrow) EHCI(&bus->pciinfo, bus->pci, bus->device, stack, node);
-	if (ehci == NULL) {
-		return B_NO_MEMORY;
-	}
-
-	if (ehci->InitCheck() < B_OK) {
-		TRACE_MODULE_ERROR("bus failed init check\n");
-		delete ehci;
-		return B_ERROR;
-	}
-
-	if (ehci->Start() != B_OK) {
-		delete ehci;
-		return B_ERROR;
-	}
-
-	*bus_cookie = ehci;
-
-	return B_OK;
-}
-
-
-static void
-uninit_bus(void* bus_cookie)
-{
-	CALLED();
-	EHCI* ehci = (EHCI*)bus_cookie;
-	delete ehci;
-}
-
-
-static status_t
-register_child_devices(void* cookie)
-{
-	CALLED();
-	ehci_pci_sim_info* bus = (ehci_pci_sim_info*)cookie;
-	device_node* node = bus->driver_node;
-
-	char prettyName[25];
-	sprintf(prettyName, "EHCI Controller %" B_PRIu16, 0);
-
-	device_attr attrs[] = {
-		// properties of this controller for the usb bus manager
-		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
-			{ .string = prettyName }},
-		{ B_DEVICE_FIXED_CHILD, B_STRING_TYPE,
-			{ .string = USB_FOR_CONTROLLER_MODULE_NAME }},
-
-		// private data to identify the device
-		{ NULL }
-	};
-
-	return gDeviceManager->register_node(node, EHCI_PCI_USB_BUS_MODULE_NAME,
-		attrs, NULL, NULL);
-}
-
-
-static status_t
-init_device(device_node* node, void** device_cookie)
-{
-	CALLED();
-	ehci_pci_sim_info* bus = (ehci_pci_sim_info*)calloc(1,
-		sizeof(ehci_pci_sim_info));
-	if (bus == NULL)
-		return B_NO_MEMORY;
-
-	pci_device_module_info* pci;
-	pci_device* device;
-	{
-		device_node* pciParent = gDeviceManager->get_parent_node(node);
-		gDeviceManager->get_driver(pciParent, (driver_module_info**)&pci,
-			(void**)&device);
-		gDeviceManager->put_node(pciParent);
-	}
-
-	bus->pci = pci;
-	bus->device = device;
-	bus->driver_node = node;
-
-	pci_info *pciInfo = &bus->pciinfo;
-	pci->get_pci_info(device, pciInfo);
-
-	*device_cookie = bus;
-	return B_OK;
-}
-
-
-static void
-uninit_device(void* device_cookie)
-{
-	CALLED();
-	ehci_pci_sim_info* bus = (ehci_pci_sim_info*)device_cookie;
-	free(bus);
-
-}
-
-
-static status_t
-register_device(device_node* parent)
-{
-	CALLED();
-	device_attr attrs[] = {
-		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = "EHCI PCI"}},
-		{}
-	};
-
-	return gDeviceManager->register_node(parent,
-		EHCI_PCI_DEVICE_MODULE_NAME, attrs, NULL, NULL);
-}
-
-
-static float
-supports_device(device_node* parent)
-{
-	CALLED();
-	const char* bus;
-	uint16 type, subType, api;
-
-	// make sure parent is a EHCI PCI device node
-	if (gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-		< B_OK) {
-		return -1;
-	}
-
-	if (strcmp(bus, "pci") != 0)
-		return 0.0f;
-
-	if (gDeviceManager->get_attr_uint16(parent, B_DEVICE_SUB_TYPE, &subType,
-			false) < B_OK
-		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_TYPE, &type,
-			false) < B_OK
-		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_INTERFACE, &api,
-			false) < B_OK) {
-		TRACE_MODULE("Could not find type/subtype/interface attributes\n");
-		return -1;
-	}
-
-	if (type == PCI_serial_bus && subType == PCI_usb && api == PCI_usb_ehci) {
-		pci_device_module_info* pci;
-		pci_device* device;
-		gDeviceManager->get_driver(parent, (driver_module_info**)&pci,
-			(void**)&device);
-		TRACE_MODULE("EHCI Device found!\n");
-
-		return 0.8f;
-	}
-
-	return 0.0f;
-}
-
-
-module_dependency module_dependencies[] = {
-	{ USB_FOR_CONTROLLER_MODULE_NAME, (module_info**)&gUSB },
-	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
-	{}
-};
-
-
-static usb_bus_interface gEHCIPCIDeviceModule = {
-	{
-		{
-			EHCI_PCI_USB_BUS_MODULE_NAME,
-			0,
-			NULL
-		},
-		NULL,  // supports device
-		NULL,  // register device
-		init_bus,
-		uninit_bus,
-		NULL,  // register child devices
-		NULL,  // rescan
-		NULL,  // device removed
-	},
-};
-
-// Root device that binds to the PCI bus. It will register an usb_bus_interface
-// node for each device.
-static driver_module_info sEHCIDevice = {
-	{
-		EHCI_PCI_DEVICE_MODULE_NAME,
-		0,
-		NULL
-	},
-	supports_device,
-	register_device,
-	init_device,
-	uninit_device,
-	register_child_devices,
-	NULL, // rescan
-	NULL, // device removed
-};
-
-module_info* modules[] = {
-	(module_info* )&sEHCIDevice,
-	(module_info* )&gEHCIPCIDeviceModule,
-	NULL
-};
-
-
+//
+// #pragma mark -
 //
 // #pragma mark -
 //
@@ -509,14 +277,151 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		TRACE_ALWAYS("no extended capabilities register\n");
 	}
 
+	// determine IRQ and MSI setup
+	fIRQ = fPCIInfo->u.h0.interrupt_line;
+	if (fIRQ == 0xFF)
+		fIRQ = 0;
+
+	if (fPci->get_msi_count(fDevice) >= 1) {
+		uint32 msiVector = 0;
+		if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+			&& fPci->enable_msi(fDevice) == B_OK) {
+			TRACE_ALWAYS("using message signaled interrupts\n");
+			fIRQ = msiVector;
+			fUseMSI = true;
+		}
+	}
+
+	if (fIRQ == 0) {
+		TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
+			fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+		return;
+	}
+
+	_Init(fRegisterArea, fCapabilityRegisters, fIRQ, fUseMSI);
+}
+
+
+EHCI::EHCI(phys_addr_t physicalBase, size_t mapSize, uint8 offset, int32 irq,
+	Stack *stack, device_node *node)
+	:	BusManager(stack, node),
+		fCapabilityRegisters(NULL),
+		fOperationalRegisters(NULL),
+		fRegisterArea(-1),
+		fPCIInfo(NULL),
+		fPci(NULL),
+		fDevice(NULL),
+		fStack(stack),
+		fEnabledInterrupts(0),
+		fThreshold(0),
+		fPeriodicFrameListArea(-1),
+		fPeriodicFrameList(NULL),
+		fInterruptEntries(NULL),
+		fItdEntries(NULL),
+		fSitdEntries(NULL),
+		fAsyncQueueHead(NULL),
+		fAsyncAdvanceSem(-1),
+		fFirstTransfer(NULL),
+		fLastTransfer(NULL),
+		fFinishTransfersSem(-1),
+		fFinishThread(-1),
+		fProcessingPipe(NULL),
+		fFreeListHead(NULL),
+		fCleanupSem(-1),
+		fCleanupThread(-1),
+		fStopThreads(false),
+		fNextStartingFrame(-1),
+		fFrameBandwidth(NULL),
+		fFirstIsochronousTransfer(NULL),
+		fLastIsochronousTransfer(NULL),
+		fFinishIsochronousTransfersSem(-1),
+		fFinishIsochronousThread(-1),
+		fRootHub(NULL),
+		fRootHubAddress(0),
+		fPortCount(0),
+		fPortResetChange(0),
+		fPortSuspendChange(0),
+		fInterruptPollThread(-1),
+		fIRQ(irq),
+		fUseMSI(false)
+{
+	dprintf("ehci_core: FDT constructor body start\n");
+	// Create a lock for the isochronous transfer list
+	mutex_init(&fIsochronousLock, "EHCI isochronous lock");
+	dprintf("ehci_core: mutex_init done\n");
+
+	if (BusManager::InitCheck() != B_OK) {
+		dprintf("ehci_core: BusManager::InitCheck failed\n");
+		TRACE_ERROR("bus manager failed to init\n");
+		return;
+	}
+	dprintf("ehci_core: BusManager::InitCheck passed\n");
+
+	TRACE("constructing new FDT EHCI host controller driver\n");
+	fInitOK = false;
+
+	dprintf("ehci_core: calling map_physical_memory physBase=0x%lx size=%zu\n",
+		physicalBase, mapSize);
+	area_id registerArea = map_physical_memory("EHCI memory mapped registers",
+		physicalBase, mapSize, B_ANY_KERNEL_BLOCK_ADDRESS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void **)&fCapabilityRegisters);
+	if (registerArea < 0) {
+		dprintf("ehci_core: map_physical_memory failed: %d\n", registerArea);
+		TRACE_ERROR("failed to map register memory\n");
+		return;
+	}
+	dprintf("ehci_core: map_physical_memory done, area=%d\n", registerArea);
+
+	fCapabilityRegisters += offset;
+
+	dprintf("ehci_core: calling _Init\n");
+	_Init(registerArea, fCapabilityRegisters, irq, false);
+	dprintf("ehci_core: _Init returned\n");
+}
+
+
+void
+EHCI::_Init(area_id registerArea, uint8 *capabilityRegisters, int32 irq,
+	bool useMSI)
+{
+	dprintf("ehci_core: _Init start, registerArea=%d capRegs=%p irq=%d\n",
+		registerArea, capabilityRegisters, irq);
+	fRegisterArea = registerArea;
+	fCapabilityRegisters = capabilityRegisters;
+	dprintf("ehci_core: reading EHCI_CAPLENGTH\n");
+	fOperationalRegisters = capabilityRegisters + ReadCapReg8(EHCI_CAPLENGTH);
+	dprintf("ehci_core: opRegs=%p\n", fOperationalRegisters);
+	fIRQ = irq;
+	fUseMSI = useMSI;
+
+	TRACE("mapped capability registers: 0x%p\n", fCapabilityRegisters);
+	TRACE("mapped operational registers: 0x%p\n", fOperationalRegisters);
+
+	TRACE("structural parameters: 0x%08" B_PRIx32 "\n",
+		ReadCapReg32(EHCI_HCSPARAMS));
+	TRACE("capability parameters: 0x%08" B_PRIx32 "\n",
+		ReadCapReg32(EHCI_HCCPARAMS));
+
+	if (EHCI_HCCPARAMS_FRAME_CACHE(ReadCapReg32(EHCI_HCCPARAMS)))
+		fThreshold = 2 + 8;
+	else
+		fThreshold = 2 + EHCI_HCCPARAMS_IPT(ReadCapReg32(EHCI_HCCPARAMS));
+
+	// read port count from capability register
+	fPortCount = ReadCapReg32(EHCI_HCSPARAMS) & 0x0f;
+
 	// disable interrupts
 	WriteOpReg(EHCI_USBINTR, 0);
 
 	// reset the host controller
+	dprintf("ehci_core: calling ControllerReset\n");
 	if (ControllerReset() != B_OK) {
+		dprintf("ehci_core: ControllerReset failed\n");
 		TRACE_ERROR("host controller failed to reset\n");
 		return;
 	}
+	dprintf("ehci_core: ControllerReset succeeded\n");
 
 	// reset the segment register
 	WriteOpReg(EHCI_CTRDSSEGMENT, 0);
@@ -570,24 +475,8 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 			"ehci interrupt poll thread", B_NORMAL_PRIORITY, (void *)this);
 		resume_thread(fInterruptPollThread);
 	} else {
-		// Find the right interrupt vector, using MSIs if available.
-		fIRQ = fPCIInfo->u.h0.interrupt_line;
-		if (fIRQ == 0xFF)
-			fIRQ = 0;
-
-		if (fPci->get_msi_count(fDevice) >= 1) {
-			uint32 msiVector = 0;
-			if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
-				&& fPci->enable_msi(fDevice) == B_OK) {
-				TRACE_ALWAYS("using message signaled interrupts\n");
-				fIRQ = msiVector;
-				fUseMSI = true;
-			}
-		}
-
 		if (fIRQ == 0) {
-			TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
-				fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+			TRACE_MODULE_ERROR("EHCI controller was assigned an invalid IRQ\n");
 			return;
 		}
 
@@ -597,14 +486,16 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	// ensure that interrupts are en-/disabled on the PCI device
-	command = fPci->read_pci_config(fDevice, PCI_command, 2);
-	if ((polling || fUseMSI) == ((command & PCI_command_int_disable) == 0)) {
-		if (polling || fUseMSI)
-			command &= ~PCI_command_int_disable;
-		else
-			command |= PCI_command_int_disable;
+	if (fPci != NULL && fDevice != NULL) {
+		uint16 command = fPci->read_pci_config(fDevice, PCI_command, 2);
+		if ((polling || fUseMSI) == ((command & PCI_command_int_disable) == 0)) {
+			if (polling || fUseMSI)
+				command &= ~PCI_command_int_disable;
+			else
+				command |= PCI_command_int_disable;
 
-		fPci->write_pci_config(fDevice, PCI_command, 2, command);
+			fPci->write_pci_config(fDevice, PCI_command, 2, command);
+		}
 	}
 
 	fEnabledInterrupts = EHCI_USBINTR_HOSTSYSERR | EHCI_USBINTR_USBERRINT
@@ -618,6 +509,8 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		/ (B_PAGE_SIZE / sizeof(sitd_entry)) * B_PAGE_SIZE;
 	size_t frameListSize = B_PAGE_SIZE + B_PAGE_SIZE + itdListSize
 		+ sitdListSize;
+
+	phys_addr_t physicalAddress;
 
 	// allocate the periodic frame list
 	fPeriodicFrameListArea = fStack->AllocateArea((void **)&fPeriodicFrameList,
@@ -769,8 +662,6 @@ EHCI::EHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	fInitOK = true;
 	TRACE("EHCI host controller driver constructed\n");
 }
-
-
 EHCI::~EHCI()
 {
 	TRACE("tear down EHCI host controller driver\n");
@@ -810,7 +701,7 @@ EHCI::~EHCI()
 	delete_area(fPeriodicFrameListArea);
 	delete_area(fRegisterArea);
 
-	if (fUseMSI) {
+	if (fUseMSI && fPci != NULL && fDevice != NULL) {
 		fPci->disable_msi(fDevice);
 		fPci->unconfigure_msi(fDevice);
 	}
@@ -821,6 +712,7 @@ EHCI::~EHCI()
 status_t
 EHCI::Start()
 {
+	dprintf("ehci_core: Start() called\n");
 	TRACE("starting EHCI host controller\n");
 	TRACE("usbcmd: 0x%08" B_PRIx32 "; usbsts: 0x%08" B_PRIx32 "\n",
 		ReadOpReg(EHCI_USBCMD), ReadOpReg(EHCI_USBSTS));
@@ -834,6 +726,7 @@ EHCI::Start()
 	uint32 frameListSize = (config >> EHCI_USBCMD_FLS_SHIFT)
 		& EHCI_USBCMD_FLS_MASK;
 
+	dprintf("ehci_core: writing USBCMD to start controller\n");
 	WriteOpReg(EHCI_USBCMD, config | EHCI_USBCMD_RUNSTOP
 		| (hasPerPortChangeEvent ? EHCI_USBCMD_PPCEE : 0)
 		| EHCI_USBCMD_ASENABLE | EHCI_USBCMD_PSENABLE
@@ -854,13 +747,14 @@ EHCI::Start()
 			TRACE_ALWAYS("unknown frame list size\n");
 	}
 
+	dprintf("ehci_core: checking if controller is running\n");
 	bool running = false;
 	for (int32 i = 0; i < 10; i++) {
 		uint32 status = ReadOpReg(EHCI_USBSTS);
-		TRACE("try %" B_PRId32 ": status 0x%08" B_PRIx32 "\n", i, status);
+		dprintf("ehci_core: try %d: status 0x%08x\n", i, status);
 
 		if (status & EHCI_USBSTS_HCHALTED) {
-			snooze(10000);
+			// snooze(10000); // Removed - causes hang on ARM64
 		} else {
 			running = true;
 			break;
@@ -868,30 +762,41 @@ EHCI::Start()
 	}
 
 	if (!running) {
+		dprintf("ehci_core: host controller didn't start\n");
 		TRACE_ERROR("host controller didn't start\n");
 		return B_ERROR;
 	}
 
+	dprintf("ehci_core: controller is running, routing ports\n");
 	// route all ports to us
 	WriteOpReg(EHCI_CONFIGFLAG, EHCI_CONFIGFLAG_FLAG);
-	snooze(10000);
+	// snooze(10000); // Removed - causes hang on ARM64
 
+	dprintf("ehci_core: allocating root hub\n");
 	fRootHubAddress = AllocateAddress();
+	dprintf("ehci_core: root hub address allocated: %d\n", fRootHubAddress);
 	fRootHub = new(std::nothrow) EHCIRootHub(RootObject(), fRootHubAddress);
+	dprintf("ehci_core: root hub object created\n");
 	if (!fRootHub) {
+		dprintf("ehci_core: no memory for root hub\n");
 		TRACE_ERROR("no memory to allocate root hub\n");
 		return B_NO_MEMORY;
 	}
 
+	dprintf("ehci_core: checking root hub\n");
 	if (fRootHub->InitCheck() != B_OK) {
+		dprintf("ehci_core: root hub failed init check\n");
 		TRACE_ERROR("root hub failed init check\n");
 		return fRootHub->InitCheck();
 	}
 
+	dprintf("ehci_core: setting root hub\n");
 	SetRootHub(fRootHub);
 
+	dprintf("ehci_core: registering root hub node\n");
 	fRootHub->RegisterNode(Node());
 
+	dprintf("ehci_core: calling BusManager::Start()\n");
 	TRACE_ALWAYS("successfully started the controller\n");
 	return BusManager::Start();
 }
@@ -1532,19 +1437,31 @@ EHCI::SuspendPort(uint8 index)
 status_t
 EHCI::ControllerReset()
 {
+	dprintf("ehci_core: ControllerReset start\n");
 	// halt the controller first
+	dprintf("ehci_core: halting controller, writing USBCMD=0\n");
+	dprintf("ehci_core: fOperationalRegisters=%p\n", fOperationalRegisters);
+	dprintf("ehci_core: EHCI_USBCMD offset=0x%x\n", EHCI_USBCMD);
 	WriteOpReg(EHCI_USBCMD, 0);
-	snooze(10000);
+	dprintf("ehci_core: USBCMD write complete, reading back\n");
+	uint32 cmd = ReadOpReg(EHCI_USBCMD);
+	dprintf("ehci_core: USBCMD read back = 0x%08x\n", cmd);
 
 	// then reset it
+	dprintf("ehci_core: issuing reset\n");
 	WriteOpReg(EHCI_USBCMD, EHCI_USBCMD_HCRESET);
 
 	int32 tries = 5;
+	dprintf("ehci_core: waiting for reset to complete\n");
 	while (ReadOpReg(EHCI_USBCMD) & EHCI_USBCMD_HCRESET) {
+		dprintf("ehci_core: reset bit still set, tries=%d\n", tries);
 		snooze(10000);
-		if (tries-- < 0)
+		if (tries-- < 0) {
+			dprintf("ehci_core: reset timeout\n");
 			return B_ERROR;
+		}
 	}
+	dprintf("ehci_core: ControllerReset complete\n");
 
 	return B_OK;
 }
@@ -2670,13 +2587,15 @@ EHCI::CreateDescriptor(size_t bufferSize, uint8 pid)
 		return result;
 	}
 
-	if (fStack->AllocateChunk(&result->buffer_log, &physicalAddress,
+	void* bufferLogTemp = NULL;
+	if (fStack->AllocateChunk(&bufferLogTemp, &physicalAddress,
 			bufferSize) != B_OK) {
 		TRACE_ERROR("unable to allocate qtd buffer\n");
 		fStack->FreeChunk(result, (phys_addr_t)result->this_phy,
 			sizeof(ehci_qtd));
 		return NULL;
 	}
+	result->buffer_log = bufferLogTemp;
 
 	addr_t physicalBase = (addr_t)physicalAddress;
 	result->buffer_phy[0] = physicalBase;

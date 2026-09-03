@@ -220,9 +220,20 @@ acpi_std_ops(int32 op,...)
 					"AcpiInitializeSubsystem failed"))
 				goto err_dpc;
 
-			if (checkAndLogFailure(AcpiInitializeTables(NULL, 0, TRUE),
-					"AcpiInitializeTables failed"))
-				goto err_acpi;
+			{
+				ACPI_STATUS status = AcpiInitializeTables(NULL, 0, TRUE);
+				if (ACPI_FAILURE(status)) {
+					if (status == AE_NOT_FOUND) {
+						ERROR("No ACPI tables found - ACPI not available\n");
+						gDPC->delete_dpc_queue(gDPCHandle);
+						gDPCHandle = NULL;
+						return ENOSYS;
+					}
+					dprintf("acpi: AcpiInitializeTables failed %s\n",
+						AcpiFormatException(status));
+					goto err_acpi;
+				}
+			}
 
 #if defined(__i386__) || defined(__x86_64__)
 			smbios_module_info* smbios;

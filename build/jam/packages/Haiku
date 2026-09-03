@@ -61,6 +61,7 @@ AddFilesToPackage add-ons kernel busses usb :
 	<usb>uhci
 	<usb>ohci
 	<usb>ehci
+	<usb>ehci_fdt@arm,arm64,riscv64
 	<usb>xhci
 	;
 AddFilesToPackage add-ons kernel busses virtio :

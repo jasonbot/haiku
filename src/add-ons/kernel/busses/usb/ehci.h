@@ -51,9 +51,11 @@ typedef struct isochronous_transfer_data {
 
 class EHCI : public BusManager {
 public:
-									EHCI(pci_info *info, pci_device_module_info* pci,
-										pci_device* device, Stack *stack, device_node *node);
-									~EHCI();
+								EHCI(pci_info *info, pci_device_module_info* pci,
+									pci_device* device, Stack *stack, device_node *node);
+								EHCI(phys_addr_t physicalBase, size_t mapSize, uint8 offset,
+									int32 irq, Stack *stack, device_node *node);
+								~EHCI();
 
 		status_t					Start();
 
@@ -86,9 +88,13 @@ virtual	status_t					NotifyPipeChange(Pipe *pipe,
 virtual	const char *				TypeName() const { return "ehci"; }
 
 private:
+		// Common initialization
+		void						_Init(area_id registerArea, uint8 *capabilityRegisters,
+									int32 irq, bool useMSI);
+
 		// Controller resets
 		status_t					ControllerReset();
-		status_t					LightReset();
+		status_t				LightReset();
 
 		// Interrupt functions
 static	int32						InterruptHandler(void *data);

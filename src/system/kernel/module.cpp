@@ -733,9 +733,11 @@ init_module(module* module)
 			TRACE(("initializing module %s (at %p)... \n", module->name,
 				module->info->std_ops));
 
+			dprintf("module: initializing '%s' (std_ops=%p)\n", module->name, module->info->std_ops);
 			if (module->info->std_ops != NULL)
 				status = module->info->std_ops(B_MODULE_INIT);
 
+			dprintf("module: '%s' init returned %s\n", module->name, strerror(status));
 			TRACE(("...done (%s)\n", strerror(status)));
 
 			if (status >= B_OK)
