@@ -773,9 +773,13 @@ EHCI::Start()
 	// snooze(10000); // Removed - causes hang on ARM64
 
 	dprintf("ehci_core: allocating root hub\n");
+	dprintf("ehci_core: calling AllocateAddress()\n");
 	fRootHubAddress = AllocateAddress();
+	dprintf("ehci_core: AllocateAddress returned %d\n", fRootHubAddress);
 	dprintf("ehci_core: root hub address allocated: %d\n", fRootHubAddress);
+	dprintf("ehci_core: about to create EHCIRootHub object\n");
 	fRootHub = new(std::nothrow) EHCIRootHub(RootObject(), fRootHubAddress);
+	dprintf("ehci_core: EHCIRootHub object created\n");
 	dprintf("ehci_core: root hub object created\n");
 	if (!fRootHub) {
 		dprintf("ehci_core: no memory for root hub\n");
