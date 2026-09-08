@@ -37,6 +37,7 @@ AddFilesToPackage add-ons kernel busses ata :
 	;
 
 AddFilesToPackage add-ons kernel busses i2c :
+	designware_i2c@arm64
 	pch_i2c@x86,x86_64
 	;
 AddFilesToPackage add-ons kernel busses mmc :
@@ -62,6 +63,7 @@ AddFilesToPackage add-ons kernel busses usb :
 	<usb>ohci
 	<usb>ehci
 	<usb>ehci_fdt@arm,arm64,riscv64
+	<usb>ohci_fdt@arm,arm64,riscv64
 	<usb>xhci
 	;
 AddFilesToPackage add-ons kernel busses virtio :

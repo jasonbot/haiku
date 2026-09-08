@@ -22,16 +22,13 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 			isRootHub, controllerCookie),
 		fInterruptPipe(NULL)
 {
-	dprintf("usb: Hub constructor entered\n");
 	TRACE("creating hub\n");
 
 	memset(&fHubDescriptor, 0, sizeof(fHubDescriptor));
 	for (int32 i = 0; i < USB_MAX_PORT_COUNT; i++)
 		fChildren[i] = NULL;
 
-	dprintf("usb: checking fInitOK=%d\n", fInitOK);
 	if (!fInitOK) {
-		dprintf("usb: device failed to initialize\n");
 		TRACE_ERROR("device failed to initialize\n");
 		return;
 	}
@@ -39,19 +36,15 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 	// Set to false again for the hub init.
 	fInitOK = false;
 
-	dprintf("usb: checking device class=%d\n", fDeviceDescriptor.device_class);
 	if (fDeviceDescriptor.device_class != 9) {
-		dprintf("usb: wrong class! bailing out\n");
 		TRACE_ERROR("wrong class! bailing out\n");
 		return;
 	}
 
-	dprintf("usb: getting hub descriptor...\n");
 	TRACE("getting hub descriptor...\n");
 	size_t actualLength;
 	status_t status = GetDescriptor(USB_DESCRIPTOR_HUB, 0, 0,
 		(void *)&fHubDescriptor, sizeof(usb_hub_descriptor), &actualLength);
-	dprintf("usb: GetDescriptor returned status=%d actualLength=%lu\n", status, actualLength);
 
 	// we need at least 8 bytes
 	if (status < B_OK || actualLength < 8) {
@@ -59,7 +52,6 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		return;
 	}
 
-	dprintf("usb: hub descriptor check passed, num_ports=%d\n", fHubDescriptor.num_ports);
 
 	TRACE("hub descriptor (%ld bytes):\n", actualLength);
 	TRACE("\tlength:..............%d\n", fHubDescriptor.length);
@@ -76,57 +68,41 @@ Hub::Hub(Object *parent, int8 hubAddress, uint8 hubPort,
 		fHubDescriptor.num_ports = USB_MAX_PORT_COUNT;
 	}
 
-	dprintf("usb: getting Configuration()\n");
 	usb_interface_list *list = Configuration()->interface;
-	dprintf("usb: got interface list, getting object\n");
 	Object *object = GetStack()->GetObject(list->active->endpoint[0].handle);
-	dprintf("usb: got object=%p\n", object);
-	dprintf("usb: checking if interrupt pipe\n");
 	if (object != NULL && (object->Type() & USB_OBJECT_INTERRUPT_PIPE) != 0) {
-		dprintf("usb: is interrupt pipe, queuing\n");
 		fInterruptPipe = (InterruptPipe *)object;
 		fInterruptPipe->QueueInterrupt(fInterruptStatus,
 			sizeof(fInterruptStatus), InterruptCallback, this);
-		dprintf("usb: QueueInterrupt returned\n");
 	} else {
-		dprintf("usb: no interrupt pipe found\n");
 		TRACE_ALWAYS("no interrupt pipe found\n");
 	}
-	dprintf("usb: releasing object reference\n");
 	if (object != NULL)
 		object->ReleaseReference();
-	dprintf("usb: object reference released\n");
 
 	// Wait some time before powering up the ports
 	// Note: snooze() hangs on ARM64 during early boot, so we skip it
 	if (!isRootHub) {
-		dprintf("usb: non-root hub, skipping USB_DELAY_HUB_POWER_UP (snooze hangs on ARM64)\n");
 		// Simple busy-wait alternative (approximately 100ms at 1GHz)
 		for (volatile int i = 0; i < 10000000; i++);
-		dprintf("usb: USB_DELAY_HUB_POWER_UP busy-wait complete\n");
 	}
 
 	// Enable port power on all ports
-	dprintf("usb: enabling port power on %d ports\n", fHubDescriptor.num_ports);
 	for (int32 i = 0; i < fHubDescriptor.num_ports; i++) {
-		dprintf("usb: powering up port %d\n", i);
 		status = DefaultPipe()->SendRequest(USB_REQTYPE_CLASS | USB_REQTYPE_OTHER_OUT,
 			USB_REQUEST_SET_FEATURE, PORT_POWER, i + 1, 0, NULL, 0, NULL);
 
 		if (status < B_OK)
 			TRACE_ERROR("power up failed on port %" B_PRId32 "\n", i);
 	}
-	dprintf("usb: port power enabled\n");
 
 	// Wait for power to stabilize
 	// Note: snooze() hangs on ARM64 during early boot, so we use busy-wait
 	bigtime_t stabilizationTime = fHubDescriptor.power_on_to_power_good * 2000;
-	dprintf("usb: about to wait for power stabilization (%ld us)\n", stabilizationTime);
 	if (stabilizationTime > 0) {
 		// Simple busy-wait (approximately 1us per 1000 iterations at 1GHz)
 		for (volatile bigtime_t i = 0; i < stabilizationTime * 1000; i++);
 	}
-	dprintf("usb: power stabilization wait complete\n");
 
 	fInitOK = true;
 	TRACE("initialised ok\n");
@@ -186,7 +162,9 @@ Hub::ResetPort(uint8 index)
 		return result;
 
 	for (int32 i = 0; i < 10; i++) {
-		snooze(USB_DELAY_PORT_RESET);
+		// Note: snooze() hangs on ARM64 during early boot, so busy-wait
+		// (approximately 1us per 1000 iterations at 1GHz)
+		for (volatile int64 j = 0; j < (int64)USB_DELAY_PORT_RESET * 1000; j++);
 
 		result = UpdatePortStatus(index);
 		if (result < B_OK)
@@ -213,7 +191,8 @@ Hub::ResetPort(uint8 index)
 		return result;
 
 	// wait for reset recovery
-	snooze(USB_DELAY_PORT_RESET_RECOVERY);
+	// Note: snooze() hangs on ARM64 during early boot, so busy-wait
+	for (volatile int64 j = 0; j < (int64)USB_DELAY_PORT_RESET_RECOVERY * 1000; j++);
 	TRACE("port %d was reset successfully\n", index);
 	return B_OK;
 }
@@ -236,6 +215,9 @@ Hub::Explore(change_item **changeList)
 		status_t result = UpdatePortStatus(i);
 		if (result < B_OK)
 			continue;
+
+		dprintf("usb hub: port %" B_PRId32 " status=0x%04x change=0x%04x\n", i,
+			fPortStatus[i].status, fPortStatus[i].change);
 
 #ifdef TRACE_USB
 		if (fPortStatus[i].change) {
@@ -263,6 +245,8 @@ Hub::Explore(change_item **changeList)
 				while (retry--) {
 					// wait for stable device power
 					result = _DebouncePort(i);
+					TRACE_ALWAYS("port %" B_PRId32 ": debounce=%s\n", i,
+						result < B_OK ? strerror(result) : "ok");
 					if (result != B_OK) {
 						TRACE_ERROR("debouncing port %" B_PRId32
 							" failed: %s\n", i, strerror(result));
@@ -271,6 +255,8 @@ Hub::Explore(change_item **changeList)
 
 					// reset the port, this will also enable it
 					result = ResetPort(i);
+					TRACE_ALWAYS("port %" B_PRId32 ": reset=%s\n", i,
+						result < B_OK ? strerror(result) : "ok");
 					if (result < B_OK) {
 						TRACE_ERROR("resetting port %" B_PRId32 " failed\n",
 							i);
@@ -329,6 +315,8 @@ Hub::Explore(change_item **changeList)
 					Device *newDevice = GetBusManager()->AllocateDevice(this,
 						hubAddress, hubPort, speed);
 
+					TRACE_ALWAYS("port %" B_PRId32 ": allocate=%s\n", i,
+						newDevice ? "ok" : "FAILED");
 					if (newDevice) {
 						newDevice->Changed(changeList, true);
 						fChildren[i] = newDevice;
@@ -515,7 +503,8 @@ Hub::_DebouncePort(uint8 index)
 	uint32 timeout = 0;
 	uint32 stableTime = 0;
 	while (timeout < USB_DEBOUNCE_TIMEOUT) {
-		snooze(USB_DEBOUNCE_CHECK_INTERVAL);
+		// Note: snooze() hangs on ARM64 during early boot, so busy-wait
+		for (volatile int64 j = 0; j < (int64)USB_DEBOUNCE_CHECK_INTERVAL * 1000; j++);
 		timeout += USB_DEBOUNCE_CHECK_INTERVAL;
 
 		status_t result = UpdatePortStatus(index);

@@ -25,7 +25,7 @@ extern "C" {
 };
 
 
-#define TRACE_FDT
+//#define TRACE_FDT
 #ifdef TRACE_FDT
 #define TRACE(x...) dprintf(x)
 #else
@@ -114,14 +114,11 @@ fdt_register_node(fdt_bus* bus, int node, device_node* parentDev,
 	if (prop != NULL) {
 		const char* propStr = (const char*)prop;
 		const char* propEnd = propStr + propLen;
-		dprintf("fdt: parsing compatible property, len=%d\n", propLen);
 		while (propEnd - propStr > 0) {
 			int curLen = strlen(propStr);
-			dprintf("fdt: compatible entry '%s' (len=%d)\n", propStr, curLen);
 			attrs.Add({ "fdt/compatible", B_STRING_TYPE, { .string = propStr }});
 			propStr += curLen + 1;
 		}
-		dprintf("fdt: compatible parsing complete\n");
 	}
 
 	attrs.Add({});
@@ -146,7 +143,6 @@ fdt_traverse(fdt_bus* bus, int &node, int &depth, device_node* parentDev)
 {
 	int curDepth = depth;
 	const char* nodeName = fdt_get_name(gFDT, node, NULL);
-	dprintf("fdt: traverse node='%s' depth=%d\n", nodeName ? nodeName : "(null)", curDepth);
 
 	device_node* curDev;
 	status_t res = fdt_register_node(bus, node, parentDev, curDev);
@@ -160,7 +156,6 @@ fdt_traverse(fdt_bus* bus, int &node, int &depth, device_node* parentDev)
 		childCount++;
 		fdt_traverse(bus, node, depth, curDev);
 	}
-	dprintf("fdt: traverse node='%s' complete, %d children\n", nodeName ? nodeName : "(null)", childCount);
 }
 
 
@@ -222,16 +217,12 @@ fdt_bus_register_device(device_node* parent)
 static status_t
 fdt_bus_init(device_node* node, void** cookie)
 {
-	dprintf("fdt: fdt_bus_init called\n");
-
 	if (gFDT == NULL) {
 		dprintf("fdt: FDT is NULL!\n");
 		return B_DEVICE_NOT_FOUND;
 	}
 
-	dprintf("fdt: gFDT is valid, checking totalsize\n");
 	size_t size = fdt_totalsize(gFDT);
-	dprintf("fdt: FDT size = %zu bytes\n", size);
 
 	if (size == 0 || size > 1024 * 1024) {
 		dprintf("fdt: Invalid FDT size!\n");
@@ -253,11 +244,9 @@ fdt_bus_init(device_node* node, void** cookie)
 
 	memcpy(newFDT, gFDT, size);
 	gFDT = newFDT;
-	dprintf("fdt: FDT copied to kernel heap\n");
 
 	bus->node = node;
 	*cookie = bus.Detach();
-	dprintf("fdt: fdt_bus_init complete\n");
 	return B_OK;
 }
 
@@ -274,11 +263,8 @@ fdt_bus_uninit(void* cookie)
 static status_t
 fdt_bus_register_child_devices(void* cookie)
 {
-	dprintf("fdt: fdt_bus_register_child_devices called\n");
-
 	fdt_bus* bus = (fdt_bus*)cookie;
 
-	dprintf("fdt: publishing bus/fdt/blob device\n");
 	status_t res = gDeviceManager->publish_device(bus->node, "bus/fdt/blob",
 		"bus_managers/fdt/device/v1");
 	if (res < B_OK) {
@@ -286,12 +272,9 @@ fdt_bus_register_child_devices(void* cookie)
 		return res;
 	}
 
-	dprintf("fdt: starting FDT traversal\n");
 	int node = -1, depth = -1;
 	node = fdt_next_node(gFDT, node, &depth);
-	dprintf("fdt: first node = %d, depth = %d\n", node, depth);
 	fdt_traverse(bus, node, depth, bus->node);
-	dprintf("fdt: FDT traversal complete\n");
 
 	return B_OK;
 }

@@ -216,6 +216,8 @@ Stack::ExploreThread(void *data)
 void
 Stack::Explore()
 {
+	dprintf("usb stack: Explore(): busManagers %" B_PRId32 "\n",
+		fBusManagers.Count());
 	recursive_lock* dmLock = device_manager_get_lock();
 	if (find_thread(NULL) != fExploreThread
 			&& recursive_lock_get_recursion(dmLock) > 0) {

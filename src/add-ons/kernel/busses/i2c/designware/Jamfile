@@ -1,0 +1,11 @@
+SubDir HAIKU_TOP src add-ons kernel busses i2c designware ;
+
+SubDirC++Flags -fno-rtti ;
+
+UsePrivateHeaders i2c ;
+UsePrivateKernelHeaders ;
+
+KernelAddon designware_i2c :
+	designware_i2c.cpp
+	kernel_interface.cpp
+;

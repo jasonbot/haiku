@@ -345,39 +345,29 @@ EHCI::EHCI(phys_addr_t physicalBase, size_t mapSize, uint8 offset, int32 irq,
 		fIRQ(irq),
 		fUseMSI(false)
 {
-	dprintf("ehci_core: FDT constructor body start\n");
 	// Create a lock for the isochronous transfer list
 	mutex_init(&fIsochronousLock, "EHCI isochronous lock");
-	dprintf("ehci_core: mutex_init done\n");
 
 	if (BusManager::InitCheck() != B_OK) {
-		dprintf("ehci_core: BusManager::InitCheck failed\n");
 		TRACE_ERROR("bus manager failed to init\n");
 		return;
 	}
-	dprintf("ehci_core: BusManager::InitCheck passed\n");
 
 	TRACE("constructing new FDT EHCI host controller driver\n");
 	fInitOK = false;
 
-	dprintf("ehci_core: calling map_physical_memory physBase=0x%lx size=%zu\n",
-		physicalBase, mapSize);
 	area_id registerArea = map_physical_memory("EHCI memory mapped registers",
 		physicalBase, mapSize, B_ANY_KERNEL_BLOCK_ADDRESS,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		(void **)&fCapabilityRegisters);
 	if (registerArea < 0) {
-		dprintf("ehci_core: map_physical_memory failed: %d\n", registerArea);
 		TRACE_ERROR("failed to map register memory\n");
 		return;
 	}
-	dprintf("ehci_core: map_physical_memory done, area=%d\n", registerArea);
 
 	fCapabilityRegisters += offset;
 
-	dprintf("ehci_core: calling _Init\n");
 	_Init(registerArea, fCapabilityRegisters, irq, false);
-	dprintf("ehci_core: _Init returned\n");
 }
 
 
@@ -385,13 +375,9 @@ void
 EHCI::_Init(area_id registerArea, uint8 *capabilityRegisters, int32 irq,
 	bool useMSI)
 {
-	dprintf("ehci_core: _Init start, registerArea=%d capRegs=%p irq=%d\n",
-		registerArea, capabilityRegisters, irq);
 	fRegisterArea = registerArea;
 	fCapabilityRegisters = capabilityRegisters;
-	dprintf("ehci_core: reading EHCI_CAPLENGTH\n");
 	fOperationalRegisters = capabilityRegisters + ReadCapReg8(EHCI_CAPLENGTH);
-	dprintf("ehci_core: opRegs=%p\n", fOperationalRegisters);
 	fIRQ = irq;
 	fUseMSI = useMSI;
 
@@ -415,13 +401,10 @@ EHCI::_Init(area_id registerArea, uint8 *capabilityRegisters, int32 irq,
 	WriteOpReg(EHCI_USBINTR, 0);
 
 	// reset the host controller
-	dprintf("ehci_core: calling ControllerReset\n");
 	if (ControllerReset() != B_OK) {
-		dprintf("ehci_core: ControllerReset failed\n");
 		TRACE_ERROR("host controller failed to reset\n");
 		return;
 	}
-	dprintf("ehci_core: ControllerReset succeeded\n");
 
 	// reset the segment register
 	WriteOpReg(EHCI_CTRDSSEGMENT, 0);
@@ -712,7 +695,6 @@ EHCI::~EHCI()
 status_t
 EHCI::Start()
 {
-	dprintf("ehci_core: Start() called\n");
 	TRACE("starting EHCI host controller\n");
 	TRACE("usbcmd: 0x%08" B_PRIx32 "; usbsts: 0x%08" B_PRIx32 "\n",
 		ReadOpReg(EHCI_USBCMD), ReadOpReg(EHCI_USBSTS));
@@ -726,7 +708,6 @@ EHCI::Start()
 	uint32 frameListSize = (config >> EHCI_USBCMD_FLS_SHIFT)
 		& EHCI_USBCMD_FLS_MASK;
 
-	dprintf("ehci_core: writing USBCMD to start controller\n");
 	WriteOpReg(EHCI_USBCMD, config | EHCI_USBCMD_RUNSTOP
 		| (hasPerPortChangeEvent ? EHCI_USBCMD_PPCEE : 0)
 		| EHCI_USBCMD_ASENABLE | EHCI_USBCMD_PSENABLE
@@ -747,11 +728,9 @@ EHCI::Start()
 			TRACE_ALWAYS("unknown frame list size\n");
 	}
 
-	dprintf("ehci_core: checking if controller is running\n");
 	bool running = false;
 	for (int32 i = 0; i < 10; i++) {
 		uint32 status = ReadOpReg(EHCI_USBSTS);
-		dprintf("ehci_core: try %d: status 0x%08x\n", i, status);
 
 		if (status & EHCI_USBSTS_HCHALTED) {
 			// snooze(10000); // Removed - causes hang on ARM64
@@ -762,46 +741,48 @@ EHCI::Start()
 	}
 
 	if (!running) {
-		dprintf("ehci_core: host controller didn't start\n");
 		TRACE_ERROR("host controller didn't start\n");
 		return B_ERROR;
 	}
 
-	dprintf("ehci_core: controller is running, routing ports\n");
 	// route all ports to us
 	WriteOpReg(EHCI_CONFIGFLAG, EHCI_CONFIGFLAG_FLAG);
 	// snooze(10000); // Removed - causes hang on ARM64
 
-	dprintf("ehci_core: allocating root hub\n");
-	dprintf("ehci_core: calling AllocateAddress()\n");
 	fRootHubAddress = AllocateAddress();
-	dprintf("ehci_core: AllocateAddress returned %d\n", fRootHubAddress);
-	dprintf("ehci_core: root hub address allocated: %d\n", fRootHubAddress);
-	dprintf("ehci_core: about to create EHCIRootHub object\n");
 	fRootHub = new(std::nothrow) EHCIRootHub(RootObject(), fRootHubAddress);
-	dprintf("ehci_core: EHCIRootHub object created\n");
-	dprintf("ehci_core: root hub object created\n");
 	if (!fRootHub) {
-		dprintf("ehci_core: no memory for root hub\n");
 		TRACE_ERROR("no memory to allocate root hub\n");
 		return B_NO_MEMORY;
 	}
 
-	dprintf("ehci_core: checking root hub\n");
 	if (fRootHub->InitCheck() != B_OK) {
-		dprintf("ehci_core: root hub failed init check\n");
 		TRACE_ERROR("root hub failed init check\n");
 		return fRootHub->InitCheck();
 	}
 
-	dprintf("ehci_core: setting root hub\n");
 	SetRootHub(fRootHub);
 
-	dprintf("ehci_core: registering root hub node\n");
 	fRootHub->RegisterNode(Node());
 
-	dprintf("ehci_core: calling BusManager::Start()\n");
 	TRACE_ALWAYS("successfully started the controller\n");
+
+	TRACE_ALWAYS("ehci: usbsts=0x%08" B_PRIx32 " usbcmd=0x%08" B_PRIx32 "\n",
+		ReadOpReg(EHCI_USBSTS), ReadOpReg(EHCI_USBCMD));
+	for (uint8 i = 0; i < fPortCount; i++) {
+		TRACE_ALWAYS("ehci: port %u raw PORTSC=0x%08" B_PRIx32 "\n",
+			i, ReadOpReg(EHCI_PORTSC + i * sizeof(uint32)));
+	}
+
+	// dump currently set port status bits once
+	for (uint8 i = 0; i < fPortCount; i++) {
+		usb_port_status status;
+		if (GetPortStatus(i, &status) == B_OK) {
+			TRACE_ALWAYS("ehci: port %u status=0x%04x change=0x%04x\n",
+				i, status.status, status.change);
+		}
+	}
+
 	return BusManager::Start();
 }
 
@@ -1441,31 +1422,19 @@ EHCI::SuspendPort(uint8 index)
 status_t
 EHCI::ControllerReset()
 {
-	dprintf("ehci_core: ControllerReset start\n");
 	// halt the controller first
-	dprintf("ehci_core: halting controller, writing USBCMD=0\n");
-	dprintf("ehci_core: fOperationalRegisters=%p\n", fOperationalRegisters);
-	dprintf("ehci_core: EHCI_USBCMD offset=0x%x\n", EHCI_USBCMD);
 	WriteOpReg(EHCI_USBCMD, 0);
-	dprintf("ehci_core: USBCMD write complete, reading back\n");
-	uint32 cmd = ReadOpReg(EHCI_USBCMD);
-	dprintf("ehci_core: USBCMD read back = 0x%08x\n", cmd);
 
 	// then reset it
-	dprintf("ehci_core: issuing reset\n");
 	WriteOpReg(EHCI_USBCMD, EHCI_USBCMD_HCRESET);
 
 	int32 tries = 5;
-	dprintf("ehci_core: waiting for reset to complete\n");
 	while (ReadOpReg(EHCI_USBCMD) & EHCI_USBCMD_HCRESET) {
-		dprintf("ehci_core: reset bit still set, tries=%d\n", tries);
 		snooze(10000);
 		if (tries-- < 0) {
-			dprintf("ehci_core: reset timeout\n");
 			return B_ERROR;
 		}
 	}
-	dprintf("ehci_core: ControllerReset complete\n");
 
 	return B_OK;
 }

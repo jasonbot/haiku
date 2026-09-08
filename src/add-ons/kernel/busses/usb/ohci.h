@@ -36,6 +36,8 @@ class OHCI : public BusManager {
 public:
 									OHCI(pci_info *info, pci_device_module_info* pci,
 										pci_device* device, Stack *stack, device_node* node);
+									OHCI(phys_addr_t physicalBase, size_t mapSize,
+										int32 irq, Stack *stack, device_node* node);
 									~OHCI();
 
 		status_t					Start();
@@ -80,6 +82,7 @@ static	int32						_InterruptHandler(void *data);
 
 static	int32						_FinishThread(void *data);
 		void						_FinishTransfers();
+		void						_ProcessPendingTransfers();
 		bool						_FinishIsochronousTransfer(
 										transfer_data *transfer,
 										transfer_data **_lastTransfer);
@@ -168,6 +171,8 @@ static	int32						_FinishThread(void *data);
 
 		status_t					_GetStatusOfConditionCode(
 										uint8 conditionCode);
+		// Common controller init shared by PCI and FDT constructors.
+		void						_Init(int32 irq);
 		// Private locking
 		bool						_LockEndpoints();
 		void						_UnlockEndpoints();

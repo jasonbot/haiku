@@ -24,7 +24,6 @@
 #else
 #	define TRACE(x...)
 #endif
-#define TRACE_ALWAYS(x...)	dprintf("\33[33mmmc_bus:\33[0m " x)
 #define ERROR(x...)			dprintf("\33[33mmmc_bus:\33[0m " x)
 #define CALLED() 			TRACE("CALLED %s\n", __PRETTY_FUNCTION__)
 

@@ -126,7 +126,6 @@ static ehci_root_hub_string_s sEHCIRootHubStrings[3] = {
 EHCIRootHub::EHCIRootHub(Object *rootObject, int8 deviceAddress)
 	:	Hub(rootObject, 0, 0, sEHCIRootHubDevice, deviceAddress, USB_SPEED_HIGHSPEED, true)
 {
-	dprintf("ehci_rh: EHCIRootHub constructor entered\n");
 }
 
 

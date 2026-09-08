@@ -21,244 +21,37 @@
 #include "ohci.h"
 
 
-#define CALLED(x...)	TRACE_MODULE("CALLED %s\n", __PRETTY_FUNCTION__)
-
 #define USB_MODULE_NAME "ohci"
 
-device_manager_info* gDeviceManager;
-static usb_for_controller_interface* gUSB;
 
+// The RK3399 USB host controllers are not cache-coherent. Any descriptor
+// memory or data buffer shared with the controller must be cleaned before
+// the controller reads it and invalidated after the controller writes to it.
+#define LOCAL_CACHE_LINE_SIZE 64
+#define OHCI_SYNC_SPIN_LIMIT 20000000
 
-#define OHCI_PCI_DEVICE_MODULE_NAME "busses/usb/ohci/pci/driver_v1"
-#define OHCI_PCI_USB_BUS_MODULE_NAME "busses/usb/ohci/device_v1"
-
-
-typedef struct {
-	OHCI* ohci;
-	pci_device_module_info* pci;
-	pci_device* device;
-
-	pci_info pciinfo;
-
-	device_node* node;
-	device_node* driver_node;
-} ohci_pci_sim_info;
-
-
-//	#pragma mark -
-
-
-static status_t
-init_bus(device_node* node, void** bus_cookie)
+static void
+usb_cache_clean(addr_t virtualAddress, size_t length)
 {
-	CALLED();
-
-	driver_module_info* driver;
-	ohci_pci_sim_info* bus;
-	device_node* parent = gDeviceManager->get_parent_node(node);
-	gDeviceManager->get_driver(parent, &driver, (void**)&bus);
-	gDeviceManager->put_node(parent);
-
-	Stack *stack;
-	if (gUSB->get_stack((void**)&stack) != B_OK)
-		return B_ERROR;
-
-	OHCI *ohci = new(std::nothrow) OHCI(&bus->pciinfo, bus->pci, bus->device, stack, node);
-	if (ohci == NULL) {
-		return B_NO_MEMORY;
+	uint8_t *address = (uint8_t *)virtualAddress;
+	for (size_t offset = 0; offset < length; offset += LOCAL_CACHE_LINE_SIZE) {
+		__asm__ __volatile__("dc civac, %0" : : "r"(address + offset)
+			: "memory");
 	}
-
-	if (ohci->InitCheck() < B_OK) {
-		TRACE_MODULE_ERROR("bus failed init check\n");
-		delete ohci;
-		return B_ERROR;
-	}
-
-	if (ohci->Start() != B_OK) {
-		delete ohci;
-		return B_ERROR;
-	}
-
-	*bus_cookie = ohci;
-
-	return B_OK;
+	__asm__ __volatile__("dsb ish" : : : "memory");
 }
 
 
 static void
-uninit_bus(void* bus_cookie)
+usb_cache_invalidate(addr_t virtualAddress, size_t length)
 {
-	CALLED();
-	OHCI* ohci = (OHCI*)bus_cookie;
-	delete ohci;
-}
-
-
-static status_t
-register_child_devices(void* cookie)
-{
-	CALLED();
-	ohci_pci_sim_info* bus = (ohci_pci_sim_info*)cookie;
-	device_node* node = bus->driver_node;
-
-	char prettyName[25];
-	sprintf(prettyName, "OHCI Controller %" B_PRIu16, 0);
-
-	device_attr attrs[] = {
-		// properties of this controller for the usb bus manager
-		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
-			{ .string = prettyName }},
-		{ B_DEVICE_FIXED_CHILD, B_STRING_TYPE,
-			{ .string = USB_FOR_CONTROLLER_MODULE_NAME }},
-
-		// private data to identify the device
-		{ NULL }
-	};
-
-	return gDeviceManager->register_node(node, OHCI_PCI_USB_BUS_MODULE_NAME,
-		attrs, NULL, NULL);
-}
-
-
-static status_t
-init_device(device_node* node, void** device_cookie)
-{
-	CALLED();
-	ohci_pci_sim_info* bus = (ohci_pci_sim_info*)calloc(1,
-		sizeof(ohci_pci_sim_info));
-	if (bus == NULL)
-		return B_NO_MEMORY;
-
-	pci_device_module_info* pci;
-	pci_device* device;
-	{
-		device_node* pciParent = gDeviceManager->get_parent_node(node);
-		gDeviceManager->get_driver(pciParent, (driver_module_info**)&pci,
-			(void**)&device);
-		gDeviceManager->put_node(pciParent);
+	uint8_t *address = (uint8_t *)virtualAddress;
+	for (size_t offset = 0; offset < length; offset += LOCAL_CACHE_LINE_SIZE) {
+		__asm__ __volatile__("dc ivac, %0" : : "r"(address + offset)
+			: "memory");
 	}
-
-	bus->pci = pci;
-	bus->device = device;
-	bus->driver_node = node;
-
-	pci_info *pciInfo = &bus->pciinfo;
-	pci->get_pci_info(device, pciInfo);
-
-	*device_cookie = bus;
-	return B_OK;
+	__asm__ __volatile__("dsb ish" : : : "memory");
 }
-
-
-static void
-uninit_device(void* device_cookie)
-{
-	CALLED();
-	ohci_pci_sim_info* bus = (ohci_pci_sim_info*)device_cookie;
-	free(bus);
-}
-
-
-static status_t
-register_device(device_node* parent)
-{
-	CALLED();
-	device_attr attrs[] = {
-		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = "OHCI PCI"}},
-		{}
-	};
-
-	return gDeviceManager->register_node(parent,
-		OHCI_PCI_DEVICE_MODULE_NAME, attrs, NULL, NULL);
-}
-
-
-static float
-supports_device(device_node* parent)
-{
-	CALLED();
-	const char* bus;
-	uint16 type, subType, api;
-
-	// make sure parent is a OHCI PCI device node
-	if (gDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-		< B_OK) {
-		return -1;
-	}
-
-	if (strcmp(bus, "pci") != 0)
-		return 0.0f;
-
-	if (gDeviceManager->get_attr_uint16(parent, B_DEVICE_SUB_TYPE, &subType,
-			false) < B_OK
-		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_TYPE, &type,
-			false) < B_OK
-		|| gDeviceManager->get_attr_uint16(parent, B_DEVICE_INTERFACE, &api,
-			false) < B_OK) {
-		TRACE_MODULE("Could not find type/subtype/interface attributes\n");
-		return -1;
-	}
-
-	if (type == PCI_serial_bus && subType == PCI_usb && api == PCI_usb_ohci) {
-		pci_device_module_info* pci;
-		pci_device* device;
-		gDeviceManager->get_driver(parent, (driver_module_info**)&pci,
-			(void**)&device);
-		TRACE_MODULE("OHCI Device found!\n");
-
-		return 0.8f;
-	}
-
-	return 0.0f;
-}
-
-
-module_dependency module_dependencies[] = {
-	{ USB_FOR_CONTROLLER_MODULE_NAME, (module_info**)&gUSB },
-	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
-	{}
-};
-
-
-static usb_bus_interface gOHCIPCIDeviceModule = {
-	{
-		{
-			OHCI_PCI_USB_BUS_MODULE_NAME,
-			0,
-			NULL
-		},
-		NULL,  // supports device
-		NULL,  // register device
-		init_bus,
-		uninit_bus,
-		NULL,  // register child devices
-		NULL,  // rescan
-		NULL,  // device removed
-	},
-};
-
-// Root device that binds to the PCI bus. It will register an usb_bus_interface
-// node for each device.
-static driver_module_info sOHCIDevice = {
-	{
-		OHCI_PCI_DEVICE_MODULE_NAME,
-		0,
-		NULL
-	},
-	supports_device,
-	register_device,
-	init_device,
-	uninit_device,
-	register_child_devices,
-	NULL, // rescan
-	NULL, // device removed
-};
-
-module_info* modules[] = {
-	(module_info* )&sOHCIDevice,
-	(module_info* )&gOHCIPCIDeviceModule,
-	NULL
-};
 
 
 //
@@ -326,8 +119,77 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 
 	TRACE("mapped operational registers: %p\n", fOperationalRegisters);
 
+	_Init(fPCIInfo == NULL ? 0 : fPCIInfo->u.h0.interrupt_line);
+}
+
+
+OHCI::OHCI(phys_addr_t physicalBase, size_t mapSize, int32 irq, Stack *stack,
+	device_node* node)
+	:	BusManager(stack, node),
+		fPCIInfo(NULL),
+		fPci(NULL),
+		fDevice(NULL),
+		fStack(stack),
+		fOperationalRegisters(NULL),
+		fRegisterArea(-1),
+		fHccaArea(-1),
+		fHcca(NULL),
+		fInterruptEndpoints(NULL),
+		fDummyControl(NULL),
+		fDummyBulk(NULL),
+		fDummyIsochronous(NULL),
+		fFirstTransfer(NULL),
+		fLastTransfer(NULL),
+		fFinishTransfersSem(-1),
+		fFinishThread(-1),
+		fStopFinishThread(false),
+		fProcessingPipe(NULL),
+		fFrameBandwidth(NULL),
+		fRootHub(NULL),
+		fRootHubAddress(0),
+		fPortCount(0),
+		fIRQ(irq),
+		fUseMSI(false)
+{
+	if (!fInitOK) {
+		TRACE_ERROR("bus manager failed to init\n");
+		return;
+	}
+
+	TRACE("constructing new FDT OHCI host controller driver\n");
+	TRACE_ALWAYS("ohci: FDT controller at 0x%" B_PRIx64 " size %#" B_PRIxSIZE
+		" irq %" B_PRId32 "\n", (uint64)physicalBase, mapSize, irq);
+	fInitOK = false;
+
+	mutex_init(&fEndpointLock, "ohci endpoint lock");
+	TRACE_ALWAYS("ohci: endpoint lock initialized\n");
+
+	fRegisterArea = map_physical_memory("OHCI memory mapped registers",
+		physicalBase, mapSize, B_ANY_KERNEL_BLOCK_ADDRESS,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void **)&fOperationalRegisters);
+	TRACE_ALWAYS("ohci: map_physical_memory: area %" B_PRId32 " regs %p\n",
+		fRegisterArea, fOperationalRegisters);
+	if (fRegisterArea < B_OK) {
+		TRACE_ERROR("failed to map register memory\n");
+		return;
+	}
+
+	TRACE("mapped operational registers: %p\n", fOperationalRegisters);
+
+	TRACE_ALWAYS("ohci: calling _Init(%" B_PRId32 ")\n", irq);
+	_Init(irq);
+	TRACE_ALWAYS("ohci: _Init returned\n");
+}
+
+
+void
+OHCI::_Init(int32 irq)
+{
 	// Check the revision of the controller, which should be 10h
+	TRACE_ALWAYS("ohci: _Init reading OHCI_REVISION\n");
 	uint32 revision = _ReadReg(OHCI_REVISION) & 0xff;
+	TRACE_ALWAYS("ohci: OHCI_REVISION read 0x%08" B_PRIx32 "\n", revision);
 	TRACE("version %" B_PRId32 ".%" B_PRId32 "%s\n",
 		OHCI_REVISION_HIGH(revision), OHCI_REVISION_LOW(revision),
 		OHCI_REVISION_LEGACY(revision) ? ", legacy support" : "");
@@ -347,10 +209,13 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	}
 
 	memset(fHcca, 0, sizeof(ohci_hcca));
+	TRACE_ALWAYS("ohci: HCCA area %#" B_PRIx32 " phy %#" B_PRIxPHYSADDR "\n",
+		fHccaArea, hccaPhysicalAddress);
 
 	// Set Up Host controller
 	// Dummy endpoints
 	fDummyControl = _AllocateEndpoint();
+	TRACE_ALWAYS("ohci: dummy control endpoint %p\n", fDummyControl);
 	if (!fDummyControl)
 		return;
 
@@ -432,7 +297,9 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		~OHCI_OWNERSHIP_CHANGE) ;
 
 	// Determine in what context we are running (Kindly copied from FreeBSD)
+	TRACE_ALWAYS("ohci: reading OHCI_CONTROL for SMM ownership\n");
 	uint32 control = _ReadReg(OHCI_CONTROL);
+	TRACE_ALWAYS("ohci: OHCI_CONTROL 0x%08" B_PRIx32 "\n", control);
 	if (control & OHCI_INTERRUPT_ROUTING) {
 		TRACE_ALWAYS("smm is in control of the host controller\n");
 		uint32 status = _ReadReg(OHCI_COMMAND_STATUS);
@@ -453,13 +320,16 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 			TRACE_ALWAYS("ownership change successful\n");
 	} else {
 		TRACE("cold started\n");
-		snooze(USB_DELAY_BUS_RESET);
+		TRACE_ALWAYS("ohci: cold start, resetting controller\n");
+		spin(USB_DELAY_BUS_RESET);
 	}
 
 	// TODO: This reset delays system boot time. It should not be necessary
 	// according to the OHCI spec, but without it some controllers don't start.
 	_WriteReg(OHCI_CONTROL, OHCI_HC_FUNCTIONAL_STATE_RESET);
-	snooze(USB_DELAY_BUS_RESET);
+	TRACE_ALWAYS("ohci: hc reset issued\n");
+	spin(USB_DELAY_BUS_RESET);
+	TRACE_ALWAYS("ohci: hc reset waited\n");
 
 	// We now own the host controller and the bus has been reset
 	uint32 frameInterval = _ReadReg(OHCI_FRAME_INTERVAL);
@@ -495,6 +365,15 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	// And finally start the controller
 	_WriteReg(OHCI_CONTROL, control);
 
+	// Flush the descriptors and interrupt table so the controller reads them
+	// from DRAM (the USB host controllers are not cache-coherent).
+	usb_cache_clean((addr_t)fHcca, 256);
+	usb_cache_clean((addr_t)fDummyControl, 64);
+	usb_cache_clean((addr_t)fDummyBulk, 64);
+	usb_cache_clean((addr_t)fDummyIsochronous, 64);
+	for (int32 i = 0; i < OHCI_STATIC_ENDPOINT_COUNT; i++)
+		usb_cache_clean((addr_t)fInterruptEndpoints[i], 64);
+
 	// The controller is now OPERATIONAL.
 	frameInterval = (_ReadReg(OHCI_FRAME_INTERVAL) & OHCI_FRAME_INTERVAL_TOGGLE)
 		^ OHCI_FRAME_INTERVAL_TOGGLE;
@@ -508,14 +387,14 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	uint32 desca = _ReadReg(OHCI_RH_DESCRIPTOR_A);
 	_WriteReg(OHCI_RH_DESCRIPTOR_A, desca | OHCI_RH_NO_OVER_CURRENT_PROTECTION);
 	_WriteReg(OHCI_RH_STATUS, OHCI_RH_LOCAL_POWER_STATUS_CHANGE);
-	snooze(OHCI_ENABLE_POWER_DELAY);
+	spin(OHCI_ENABLE_POWER_DELAY);
 	_WriteReg(OHCI_RH_DESCRIPTOR_A, desca);
 
 	// The AMD756 requires a delay before re-reading the register,
 	// otherwise it will occasionally report 0 ports.
 	uint32 numberOfPorts = 0;
 	for (uint32 i = 0; i < 10 && numberOfPorts == 0; i++) {
-		snooze(OHCI_READ_DESC_DELAY);
+		spin(OHCI_READ_DESC_DELAY);
 		uint32 descriptor = _ReadReg(OHCI_RH_DESCRIPTOR_A);
 		numberOfPorts = OHCI_RH_GET_PORT_COUNT(descriptor);
 	}
@@ -543,28 +422,34 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	resume_thread(fFinishThread);
 
 	// Find the right interrupt vector, using MSIs if available.
-	fIRQ = fPCIInfo->u.h0.interrupt_line;
-	if (fIRQ == 0xFF)
-		fIRQ = 0;
+	// (FDT-backed nodes supply their IRQ directly via fIRQ.)
+	if (fPCIInfo != NULL) {
+		fIRQ = fPCIInfo->u.h0.interrupt_line;
+		if (fIRQ == 0xFF)
+			fIRQ = 0;
 
-	if (fPci->get_msi_count(fDevice) >= 1) {
-		uint32 msiVector = 0;
-		if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
-			&& fPci->enable_msi(fDevice) == B_OK) {
-			TRACE_ALWAYS("using message signaled interrupts\n");
-			fIRQ = msiVector;
-			fUseMSI = true;
+		if (fPci->get_msi_count(fDevice) >= 1) {
+			uint32 msiVector = 0;
+			if (fPci->configure_msi(fDevice, 1, &msiVector) == B_OK
+				&& fPci->enable_msi(fDevice) == B_OK) {
+				TRACE_ALWAYS("using message signaled interrupts\n");
+				fIRQ = msiVector;
+				fUseMSI = true;
+			}
 		}
 	}
 
 	if (fIRQ == 0) {
 		TRACE_MODULE_ERROR("device PCI:%d:%d:%d was assigned an invalid IRQ\n",
-			fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function);
+			fPCIInfo != NULL ? fPCIInfo->bus : -1,
+			fPCIInfo != NULL ? fPCIInfo->device : -1,
+			fPCIInfo != NULL ? fPCIInfo->function : -1);
 		return;
 	}
 
 	// Install the interrupt handler
 	TRACE("installing interrupt handler\n");
+	TRACE_ALWAYS("ohci: installing irq %" B_PRId32 " handler\n", fIRQ);
 	install_io_interrupt_handler(fIRQ, _InterruptHandler, (void *)this, 0);
 
 	// Enable interesting interrupts now that the handler is in place
@@ -572,6 +457,7 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		| OHCI_MASTER_INTERRUPT_ENABLE);
 
 	TRACE("OHCI host controller driver constructed\n");
+	TRACE_ALWAYS("ohci: constructed, %u ports\n", fPortCount);
 	fInitOK = true;
 }
 
@@ -606,7 +492,7 @@ OHCI::~OHCI()
 	delete [] fInterruptEndpoints;
 	delete fRootHub;
 
-	if (fUseMSI) {
+	if (fUseMSI && fPci != NULL) {
 		fPci->disable_msi(fDevice);
 		fPci->unconfigure_msi(fDevice);
 	}
@@ -949,10 +835,14 @@ OHCI::_Interrupt()
 			& ~OHCI_WRITEBACK_DONE_HEAD;
 		if (status == 0) {
 			// Nothing to be done (PCI shared interrupt)
+			TRACE_ALWAYS("ohci irq: spurious (int=0)\n");
 			release_spinlock(&lock);
 			return B_UNHANDLED_INTERRUPT;
 		}
 	}
+
+	TRACE_ALWAYS("ohci irq: hccaDone=0x%" B_PRIx32 " int=0x%" B_PRIx32 "\n",
+		doneHead, status);
 
 	if (status & OHCI_SCHEDULING_OVERRUN) {
 		TRACE_MODULE("scheduling overrun occured\n");
@@ -1118,28 +1008,30 @@ OHCI::_FinishThread(void *data)
 
 
 void
-OHCI::_FinishTransfers()
+OHCI::_ProcessPendingTransfers()
 {
-	while (!fStopFinishThread) {
-		if (acquire_sem(fFinishTransfersSem) < B_OK)
-			continue;
+	if (!Lock())
+		return;
 
-		// eat up sems that have been released by multiple interrupts
-		int32 semCount = 0;
-		get_sem_count(fFinishTransfersSem, &semCount);
-		if (semCount > 0)
-			acquire_sem_etc(fFinishTransfersSem, semCount, B_RELATIVE_TIMEOUT, 0);
+	// Invalidate the done list pointer before reading it: the controller
+	// writes it asynchronously and the CPU may have a stale cached copy.
+	usb_cache_invalidate((addr_t)&fHcca->done_head, 1);
 
-		if (!Lock())
-			continue;
+	// If the controller wrote back a done list, clear it so the next
+	// completion is still detected.
+	if (fHcca->done_head != 0) {
+		fHcca->done_head = 0;
+		usb_cache_clean((addr_t)&fHcca->done_head, 1);
+		_WriteReg(OHCI_INTERRUPT_STATUS, OHCI_WRITEBACK_DONE_HEAD);
+	}
 
-		TRACE("finishing transfers (first transfer: %p; last"
-			" transfer: %p)\n", fFirstTransfer, fLastTransfer);
-		transfer_data *lastTransfer = NULL;
-		transfer_data *transfer = fFirstTransfer;
-		Unlock();
+	TRACE("finishing transfers (first transfer: %p; last"
+		" transfer: %p)\n", fFirstTransfer, fLastTransfer);
+	transfer_data *lastTransfer = NULL;
+	transfer_data *transfer = fFirstTransfer;
+	Unlock();
 
-		while (transfer) {
+	while (transfer) {
 			bool transferDone = false;
 			ohci_general_td *descriptor = transfer->first_descriptor;
 			ohci_endpoint_descriptor *endpoint = transfer->endpoint;
@@ -1157,6 +1049,7 @@ OHCI::_FinishTransfers()
 
 			MutexLocker endpointLocker(endpoint->lock);
 
+			usb_cache_invalidate((addr_t)endpoint, 1);
 			if ((endpoint->head_physical_descriptor & OHCI_ENDPOINT_HEAD_MASK)
 					!= endpoint->tail_physical_descriptor
 						&& (endpoint->head_physical_descriptor
@@ -1173,6 +1066,7 @@ OHCI::_FinishTransfers()
 			endpointLocker.Unlock();
 
 			while (descriptor && !transfer->canceled) {
+				usb_cache_invalidate((addr_t)descriptor, 1);
 				uint32 status = OHCI_TD_GET_CONDITION_CODE(descriptor->flags);
 				if (status == OHCI_TD_CONDITION_NOT_ACCESSED) {
 					// td is still active
@@ -1183,6 +1077,7 @@ OHCI::_FinishTransfers()
 				if (status != OHCI_TD_CONDITION_NO_ERROR) {
 					// an error occured, but we must ensure that the td
 					// was actually done
+					usb_cache_invalidate((addr_t)endpoint, 1);
 					if (endpoint->head_physical_descriptor & OHCI_ENDPOINT_HALTED) {
 						// the endpoint is halted, this guaratees us that this
 						// descriptor has passed (we don't know if the endpoint
@@ -1257,6 +1152,8 @@ OHCI::_FinishTransfers()
 
 			// break the descriptor chain on the last descriptor
 			transfer->last_descriptor->next_logical_descriptor = NULL;
+			TRACE_ALWAYS("ohci: transfer %p done cc=0x%08" B_PRIx32 "\n",
+				transfer, callbackStatus);
 			TRACE("transfer %p done with status 0x%08" B_PRIx32 "\n",
 				transfer, callbackStatus);
 
@@ -1317,6 +1214,35 @@ OHCI::_FinishTransfers()
 			delete transfer;
 			transfer = next;
 		}
+}
+
+
+void
+OHCI::_FinishTransfers()
+{
+	int32 pollCount = 0;
+	while (!fStopFinishThread) {
+		if (fFirstTransfer == NULL) {
+			// Nothing to do: block until a transfer is submitted or the
+			// interrupt handler wakes us up.
+			if (acquire_sem(fFinishTransfersSem) < B_OK)
+				continue;
+			continue;
+		}
+
+		// Poll pending transfers to completion. This does not depend on
+		// interrupts or kernel timers.
+		if ((pollCount++ % 1000) == 0 && fFirstTransfer != NULL) {
+			uint32 intStatus = _ReadReg(OHCI_INTERRUPT_STATUS)
+				& _ReadReg(OHCI_INTERRUPT_ENABLE);
+			ohci_general_td *td = fFirstTransfer->first_descriptor;
+			TRACE_ALWAYS("ohci: poll done=0x%" B_PRIx32
+				" int=0x%" B_PRIx32 " tdcc=0x%" B_PRIx32 "\n",
+				fHcca->done_head, intStatus, td != NULL
+					? OHCI_TD_GET_CONDITION_CODE(td->flags)
+					: 0xffffffffU);
+		}
+		_ProcessPendingTransfers();
 	}
 }
 
@@ -1533,9 +1459,39 @@ OHCI::_SubmitRequest(Transfer *transfer)
 	_SwitchEndpointTail(endpoint, setupDescriptor, statusDescriptor);
 	endpointLocker.Unlock();
 
+	// Flush the descriptors and endpoint to DRAM so the controller can see
+	// them (the USB host controllers are not cache-coherent).
+	usb_cache_clean((addr_t)setupDescriptor, 64);
+	usb_cache_clean((addr_t)statusDescriptor, 64);
+	if (dataDescriptor != NULL)
+		usb_cache_clean((addr_t)dataDescriptor, 64);
+	usb_cache_clean((addr_t)endpoint, 64);
+
 	// Tell the controller to process the control list
 	endpoint->flags &= ~OHCI_ENDPOINT_SKIP;
+	usb_cache_clean((addr_t)endpoint, 64);
 	_WriteReg(OHCI_COMMAND_STATUS, OHCI_CONTROL_LIST_FILLED);
+
+	// Wait synchronously for the transfer to become visible to the
+	// controller. This busy-wait does not rely on interrupts or kernel
+	// timers, which may not be available yet during early ARM64 boot. The
+	// finisher thread (if scheduled) completes the transfer normally.
+	ohci_general_td *probeDescriptor = statusDescriptor;
+	uint32 spinCount = 0;
+	uint32 condition = OHCI_TD_CONDITION_NOT_ACCESSED;
+	while (spinCount < OHCI_SYNC_SPIN_LIMIT) {
+		usb_cache_invalidate((addr_t)probeDescriptor, 1);
+		condition = OHCI_TD_GET_CONDITION_CODE(probeDescriptor->flags);
+		if (condition != OHCI_TD_CONDITION_NOT_ACCESSED)
+			break;
+		spinCount++;
+	}
+
+	if (condition == OHCI_TD_CONDITION_NOT_ACCESSED)
+		TRACE_ALWAYS("ohci: control transfer not completed after spin\n");
+
+	// Wake the finisher thread for any remaining transfers.
+	release_sem_etc(fFinishTransfersSem, 1, B_DO_NOT_RESCHEDULE);
 	return B_OK;
 }
 
@@ -1600,12 +1556,44 @@ OHCI::_SubmitTransfer(Transfer *transfer)
 	_SwitchEndpointTail(endpoint, firstDescriptor, lastDescriptor);
 	endpointLocker.Unlock();
 
+	// Flush the descriptors and endpoint to DRAM so the controller can see
+	// them (the USB host controllers are not cache-coherent).
+	{
+		ohci_general_td *td = firstDescriptor;
+		while (td != NULL) {
+			usb_cache_clean((addr_t)td, 64);
+			if (td == lastDescriptor)
+				break;
+			ohci_general_td *next = (ohci_general_td *)td->next_logical_descriptor;
+			if (next == NULL)
+				break;
+			td = next;
+		}
+	}
+
 	endpoint->flags &= ~OHCI_ENDPOINT_SKIP;
+	usb_cache_clean((addr_t)endpoint, 64);
 	if (pipe->Type() & USB_OBJECT_BULK_PIPE) {
 		// Tell the controller to process the bulk list
 		_WriteReg(OHCI_COMMAND_STATUS, OHCI_BULK_LIST_FILLED);
 	}
 
+	// Wait synchronously for the transfer to complete (see _SubmitRequest).
+	uint32 spinCount = 0;
+	uint32 condition = OHCI_TD_CONDITION_NOT_ACCESSED;
+	while (spinCount < OHCI_SYNC_SPIN_LIMIT) {
+		usb_cache_invalidate((addr_t)lastDescriptor, 1);
+		condition = OHCI_TD_GET_CONDITION_CODE(lastDescriptor->flags);
+		if (condition != OHCI_TD_CONDITION_NOT_ACCESSED)
+			break;
+		spinCount++;
+	}
+
+	if (condition == OHCI_TD_CONDITION_NOT_ACCESSED)
+		TRACE_ALWAYS("ohci: transfer not completed after spin\n");
+
+	// Wake the finisher thread for any remaining transfers.
+	release_sem_etc(fFinishTransfersSem, 1, B_DO_NOT_RESCHEDULE);
 	return B_OK;
 }
 
@@ -2321,6 +2309,10 @@ OHCI::_WriteDescriptorChain(ohci_general_td *topDescriptor, generic_io_vec *vect
 			}
 		}
 
+		// Flush the data buffer to DRAM so the controller can read it
+		// (the USB host controllers are not cache-coherent).
+		usb_cache_clean((addr_t)current->buffer_logical, current->buffer_size);
+
 		if (!current->next_logical_descriptor)
 			break;
 
@@ -2403,6 +2395,12 @@ OHCI::_ReadDescriptorChain(ohci_general_td *topDescriptor, generic_io_vec *vecto
 		!= OHCI_TD_CONDITION_NOT_ACCESSED) {
 		if (!current->buffer_logical)
 			break;
+
+		// Invalidate the data buffer before reading it: the controller wrote
+		// it asynchronously and the CPU may have a stale cached copy.
+		usb_cache_invalidate((addr_t)current->buffer_logical,
+			current->buffer_size);
+		usb_cache_invalidate((addr_t)current, 1);
 
 		size_t bufferSize = current->buffer_size;
 		if (current->buffer_physical != 0) {

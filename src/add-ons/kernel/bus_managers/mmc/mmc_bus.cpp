@@ -40,7 +40,6 @@ MMCBus::MMCBus(device_node* node)
 	fLockSemaphore = create_sem(1, "MMC bus lock");
 	fWorkerThread = spawn_kernel_thread(_WorkerThread, "SD bus controller",
 		B_URGENT_PRIORITY, this);
-	TRACE_ALWAYS("worker spawned: thread %" B_PRId32 "\n", fWorkerThread);
 	resume_thread(fWorkerThread);
 
 	fController->set_scan_semaphore(fCookie, fScanSemaphore);
@@ -146,11 +145,9 @@ MMCBus::_ActivateDevice(uint16_t rca)
 
 void MMCBus::_AcquireScanSemaphore()
 {
-	TRACE_ALWAYS("_AcquireScanSemaphore: release+acquire (sem %" B_PRId32 ")\n", fScanSemaphore);
 	ReleaseBus();
 	acquire_sem(fScanSemaphore);
 	AcquireBus();
-	TRACE_ALWAYS("_AcquireScanSemaphore: woken\n");
 }
 
 
@@ -167,9 +164,7 @@ MMCBus::_WorkerThread(void* cookie)
 	MMCBus* bus = (MMCBus*)cookie;
 	uint32_t response;
 
-	TRACE_ALWAYS("worker entered (scan sem %" B_PRId32 ")\n", bus->fScanSemaphore);
 	bus->AcquireBus();
-	TRACE_ALWAYS("worker acquired bus\n");
 
 	// We assume the bus defaults to 400kHz clock and has already powered on
 	// cards.
@@ -194,22 +189,17 @@ MMCBus::_WorkerThread(void* cookie)
 		TRACE("CMD0 result: %s\n", strerror(result));
 	} while (result != B_OK);
 
-	TRACE_ALWAYS("CMD0 ok, snoozing 30ms...\n");
 	// Use busy-wait instead of snooze to avoid timer/scheduler issues
 	bigtime_t _t0 = system_time();
 	while (system_time() - _t0 < 30000)
 		__asm__ __volatile__("dmb ishst" : : : "memory");
-	TRACE_ALWAYS("snooze done, entering scan loop\n");
 
 	while (bus->fStatus != B_SHUTTING_DOWN) {
-		TRACE_ALWAYS("Scanning the bus\n");
+		TRACE("Scanning the bus\n");
 
 		// Use the low speed clock and 1bit bus width for scanning
-		TRACE_ALWAYS("SetClock(400)...\n");
 		bus->SetClock(400);
-		TRACE_ALWAYS("SetBusWidth(1)...\n");
 		bus->SetBusWidth(1);
-		TRACE_ALWAYS("probing CMD8...\n");
 
 		// Probe the voltage range
 		enum {
@@ -229,7 +219,6 @@ MMCBus::_WorkerThread(void* cookie)
 		uint32_t hcs = 1 << 30;
 		uint32_t ocr;
 		status_t status = bus->ExecuteCommand(0, SD_SEND_IF_COND, probe, &response);
-		TRACE_ALWAYS("CMD8: %s, response=%x\n", strerror(status), response);
 		if (status != B_OK) {
 			TRACE("Card does not implement CMD8, may be a V1 SD or MMC card\n");
 			// Do not check for SDHC support in this case
@@ -240,7 +229,7 @@ MMCBus::_WorkerThread(void* cookie)
 				status = bus->ExecuteCommand(0, MMC_SEND_OP_COND, 0xFF8000, &ocr);
 				// full voltage window, byte addressable, should look into this.
 				if (status != B_OK) {
-					TRACE_ALWAYS("CMD1 failed: %s\n", strerror(status));
+					TRACE("MMC CMD1 failed\n");
 					break;
 				}
 			if ((ocr & (1 << 31)) == 0) {
@@ -250,8 +239,6 @@ MMCBus::_WorkerThread(void* cookie)
 					__asm__ __volatile__("dmb ishst" : : : "memory");
 			}
 			} while ((ocr & (1 << 31)) == 0);
-
-			TRACE_ALWAYS("CMD1: %s, ocr=%x\n", strerror(status), ocr);
 
 			if (status == B_OK && (ocr & (1 << 31)) != 0) {
 				TRACE("Detected MMC card after CMD1\n");
@@ -288,8 +275,6 @@ MMCBus::_WorkerThread(void* cookie)
 
 				bus->ExecuteCommand(0, SD_SEND_OP_COND, hcs | 0xFF8000, &ocr);
 
-				TRACE_ALWAYS("ACMD41: ocr=%x (retries %d)\n", ocr, acmd41Retries);
-
 			if ((ocr & (1 << 31)) == 0) {
 				TRACE("Card is busy\n");
 				bigtime_t _bt = system_time();
@@ -299,7 +284,7 @@ MMCBus::_WorkerThread(void* cookie)
 			} while ((ocr & (1 << 31)) == 0 && acmd41Retries-- > 0);
 
 			if ((ocr & (1 << 31)) == 0) {
-				TRACE_ALWAYS("ACMD41 timed out, card did not become ready\n");
+				TRACE("ACMD41 timed out, card did not become ready\n");
 				bus->_TerminateBus();
 				bus->ReleaseBus();
 				return B_ERROR;
@@ -392,8 +377,6 @@ MMCBus::_WorkerThread(void* cookie)
 		}
 
 		if (cardFound) {
-			TRACE_ALWAYS("Card found: type=%d, rca=%x, vendor=%" B_PRIu32 ", name='%s'\n",
-				cardType, rca, vendor, name);
 			device_attr attrs[] = {
 				{ B_DEVICE_BUS, B_STRING_TYPE, {.string = "mmc" }},
 				{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, {.string = "mmc device" }},

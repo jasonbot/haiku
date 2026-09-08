@@ -837,7 +837,7 @@ void
 DwMmcBus::SetScanSemaphore(sem_id sem)
 {
 	fScanSemaphore = sem;
-	TRACE_ALWAYS("SetScanSemaphore(sem %" B_PRId32 ")\n", sem);
+	TRACE("SetScanSemaphore(sem %" B_PRId32 ")\n", sem);
 
 	// There is no reliable way to detect a missing card from the controller
 	// (the slide switch on the Pinebook Pro uses a GPIO), so just start a

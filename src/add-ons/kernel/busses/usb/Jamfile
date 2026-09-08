@@ -13,6 +13,7 @@ KernelAddon <usb>uhci :
 	;
 
 KernelAddon <usb>ohci :
+	ohci_pci.cpp
 	ohci.cpp
 	ohci_rh.cpp
 	: libusb.a
@@ -31,6 +32,14 @@ KernelAddon <usb>ehci_fdt :
 	ehci_fdt.cpp
 	ehci_core.cpp
 	ehci_rh.cpp
+	: libusb.a
+	:
+	;
+
+KernelAddon <usb>ohci_fdt :
+	ohci_fdt.cpp
+	ohci.cpp
+	ohci_rh.cpp
 	: libusb.a
 	:
 	;

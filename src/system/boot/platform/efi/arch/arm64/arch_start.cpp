@@ -49,7 +49,6 @@ void
 arm64_common_cpu_startup()
 {
 	arch_cache_disable();
-	uart_phys_debug("<CL:");
 
 	// Enable EL2 host bits if FEAT_VHE is available
 	uint64 el = arch_exception_level();
@@ -62,8 +61,6 @@ arm64_common_cpu_startup()
 			WRITE_SPECIALREG(CPACR_EL1, CPACR_FPEN_TRAP_NONE);
 		}
 	}
-	uart_phys_debug(el == 1 ? "E1:" : el == 2 ? "E2:" : "E3:");
-	uart_phys_debug(e2h ? "VH:" : "NVH:");
 
 	// EL2 with E2H enabled behaves as a superset of EL1
 	//
@@ -71,28 +68,20 @@ arm64_common_cpu_startup()
 	if (el == 1 || e2h) {
 		arm64_mmu_setup();
 		WRITE_SPECIALREG(CNTKCTL_EL1, 0b11);
-		uart_phys_debug("MMU1:");
 	} else {
 		_arch_transition_EL2_EL1();
-		uart_phys_debug("AT1:");
 		// TMP FIX: transition.S clobbers TTBR0_EL1/MAIR_EL1 (copies from
 		// TTBR0_EL2/MAIR_EL2). arm64_mmu_setup() must therefore run AFTER the
 		// drop to EL1, or the MMU-enable uses U-Boot's stale page tables.
 		arm64_mmu_setup();
-		uart_phys_debug("MS2:");
 		WRITE_SPECIALREG(CNTKCTL_EL1, 0b11);
 	}
-
-	uart_phys_debug("F0:");
 
 	WRITE_SPECIALREG(SCTLR_EL1, SCTLR_LSMAOE | SCTLR_nTLSMD
 		| SCTLR_UCI | SCTLR_SPAN | SCTLR_IESB | SCTLR_nTWE | SCTLR_nTWI
 		| SCTLR_UCT | SCTLR_DZE | SCTLR_SED);
 
-	uart_phys_debug("F1:");
-
 	arch_cache_enable();
-	uart_phys_debug(">CL:");
 }
 
 
@@ -220,15 +209,10 @@ arch_start_kernel(addr_t kernelEntry)
 	// Re-init and activate serial in a horrific post-EFI landscape. Clowns roam the land freely.
 	serial_init();
 	serial_enable();
-	uart_phys_emit("X0:");
-	dprintf("TMP: post-EFI serial live\n");
-	uart_phys_emit("X1:");
 
 	arm64_common_cpu_startup();
-	dprintf("TMP: cpu startup done\n");
 
 	smp_boot_other_cpus(ttbr1, kernelEntry, (addr_t)&gKernelArgs);
-	dprintf("TMP: smp boot done\n");
 
 	if (arch_mmu_read_access(kernelEntry)
 		&& arch_mmu_read_access(gKernelArgs.cpu_kstack[0].start)) {
