@@ -1,11 +1,12 @@
 /*
- * Copyright 2003-2010, Haiku, Inc.
+ * Copyright 2003-2026, Haiku. All rights reserved.
  * Distributed under the terms of the MIT license.
  *
  * Authors:
  *		Jérôme Duval
  *		François Revol
  *		Axel Dörfler, axeld@pinc-software.de.
+ *		John Scipione, jscipione@gmail.com
  */
 
 
@@ -19,31 +20,46 @@
 #include <Catalog.h>
 #include <ControlLook.h>
 #include <Dragger.h>
+#include <IconUtils.h>
 #include <MediaRoster.h>
+#include <MenuItem.h>
 #include <MessageRunner.h>
+#include <PopUpMenu.h>
+#include <Resources.h>
 
 #include <AppMisc.h>
+#include <SystemCatalog.h>
+#include <ViewPrivate.h>
 
 #include "desklink.h"
 #include "MixerControl.h"
 #include "VolumeWindow.h"
 
 
+using BPrivate::gSystemCatalog;
+
+
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "VolumeControl"
 
 
+static const char* kSpeakerWithCancellationStroke = "\xF0\x9F\x94\x87";
+static const char* kSpeakerWithOneSoundWave = "\xF0\x9F\x94\x89";
+static const char* kSpeakerWithThreeSoundWaves = "\xF0\x9F\x94\x8A";
+
 static const uint32 kMsgReconnectVolume = 'rcms';
 
 
-VolumeControl::VolumeControl(int32 volumeWhich, bool beep, BMessage* message)
+VolumeControl::VolumeControl()
 	:
-	BSlider("VolumeControl", B_TRANSLATE("Volume"), message, 0, 1, B_HORIZONTAL),
-	fMixerControl(new MixerControl(volumeWhich)),
-	fBeep(beep),
+	BSlider("VolumeControl", B_TRANSLATE("Volume"),
+		new BMessage(kMsgVolumeChanged), 0, 1, B_HORIZONTAL),
+	fMixerControl(NULL),
 	fSnapping(false),
 	fConnectRetries(0)
 {
+	_Init();
+
 	font_height fontHeight;
 	GetFontHeight(&fontHeight);
 	SetBarThickness(ceilf((fontHeight.ascent + fontHeight.descent) * 0.7));
@@ -52,6 +68,13 @@ VolumeControl::VolumeControl(int32 volumeWhich, bool beep, BMessage* message)
 	rect.top = rect.bottom - 7;
 	rect.left = rect.right - 7;
 	BDragger* dragger = new BDragger(rect, this, B_FOLLOW_RIGHT | B_FOLLOW_BOTTOM);
+
+	const char* remove = gSystemCatalog.GetString(B_TRANSLATE("Remove replicant"), "Dragger");
+
+	BPopUpMenu* popUp = new BPopUpMenu("volume", false, false, B_ITEMS_IN_COLUMN);
+	popUp->AddItem(new BMenuItem(remove, new BMessage(kDeleteReplicant)));
+	dragger->SetPopUp(popUp);
+
 	AddChild(dragger);
 }
 
@@ -63,17 +86,10 @@ VolumeControl::VolumeControl(BMessage* archive)
 	fSnapping(false),
 	fConnectRetries(0)
 {
-	if (archive->FindBool("beep", &fBeep) != B_OK)
-		fBeep = false;
+	_Init();
 
-	int32 volumeWhich;
-	if (archive->FindInt32("volume which", &volumeWhich) != B_OK)
-		volumeWhich = VOLUME_USE_MIXER;
-
-	fMixerControl = new MixerControl(volumeWhich);
-
-	BMessage msg(B_QUIT_REQUESTED);
-	archive->SendReply(&msg);
+	BMessage message(B_QUIT_REQUESTED);
+	archive->SendReply(&message);
 }
 
 
@@ -86,21 +102,25 @@ VolumeControl::~VolumeControl()
 status_t
 VolumeControl::Archive(BMessage* into, bool deep) const
 {
-	status_t status;
+	status_t result = B_ERROR;
 
-	status = BView::Archive(into, deep);
-	if (status < B_OK)
-		return status;
+	result = BView::Archive(into, deep);
+	if (result != B_OK)
+		return result;
 
-	status = into->AddString("add_on", kAppSignature);
-	if (status < B_OK)
-		return status;
+	result = into->AddString("add_on", kAppSignature);
+	if (result != B_OK)
+		return result;
 
-	status = into->AddBool("beep", fBeep);
-	if (status != B_OK)
-		return status;
+	result = into->AddInt32("volume which", fMixerControl->VolumeWhich());
+	if (result != B_OK)
+		return result;
 
-	return into->AddInt32("volume which", fMixerControl->VolumeWhich());
+	result = into->AddBool("beep", fMixerControl->Beep());
+	if (result != B_OK)
+		return result;
+
+	return result;
 }
 
 
@@ -124,8 +144,9 @@ VolumeControl::AttachedToWindow()
 		SetDrawingMode(B_OP_ALPHA);
 		SetFlags(Flags() | B_TRANSPARENT_BACKGROUND);
 		SetViewColor(B_TRANSPARENT_COLOR);
-	} else
+	} else {
 		SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+	}
 
 	BMediaRoster* roster = BMediaRoster::Roster();
 	roster->StartWatching(BMessenger(this), B_MEDIA_SERVER_STARTED);
@@ -133,7 +154,7 @@ VolumeControl::AttachedToWindow()
 
 	_ConnectVolume();
 
-	if (!fMixerControl->Connected()) {
+	if (!fMixerControl->IsConnected()) {
 		// Wait a bit, and try again - the media server might not have been
 		// ready yet
 		BMessage reconnect(kMsgReconnectVolume);
@@ -164,12 +185,15 @@ VolumeControl::DetachedFromWindow()
 void
 VolumeControl::MouseDown(BPoint where)
 {
-	// Ignore clicks on the dragger
+	if (Looper() == NULL || Looper()->CurrentMessage() == NULL)
+		return;
+
 	int32 viewToken;
-	if (Bounds().Contains(where) && Looper()->CurrentMessage() != NULL
-		&& Looper()->CurrentMessage()->FindInt32("_view_token",
-				&viewToken) == B_OK
-		&& viewToken != _get_object_token_(this))
+	if (Looper()->CurrentMessage()->FindInt32("_view_token", &viewToken) != B_OK)
+		viewToken = -1;
+
+	// ignore clicks on the dragger
+	if (Bounds().Contains(where) && viewToken >= 0 && viewToken != _get_object_token_(this))
 		return;
 
 	// TODO: investigate why this does not work as expected (the dragger
@@ -180,6 +204,17 @@ VolumeControl::MouseDown(BPoint where)
 			return;
 	}
 #endif
+
+	uint32 buttons;
+	if (Looper()->CurrentMessage()->FindInt32("buttons", (int32*)&buttons) != B_OK)
+		buttons = 0;
+
+	if (IsEnabled()) {
+		if (BRect(B_ORIGIN, BControlLook::ComposeIconSize(B_MINI_ICON)).Contains(where)) {
+			Looper()->PostMessage(kMsgToggleMute, this);
+			return; // do not invoke
+		}
+	}
 
 	if (!IsEnabled() || !Bounds().Contains(where)) {
 		Invoke();
@@ -260,19 +295,19 @@ VolumeControl::MouseMoved(BPoint where, uint32 transit,
 
 
 void
-VolumeControl::MessageReceived(BMessage* msg)
+VolumeControl::MessageReceived(BMessage* message)
 {
-	switch (msg->what) {
+	switch (message->what) {
 		case B_MOUSE_WHEEL_CHANGED:
 		{
-			if (!fMixerControl->Connected())
+			if (!fMixerControl->IsConnected())
 				return;
 
 			// Even though the volume bar is horizontal, we use the more common
 			// vertical mouse wheel change
 			float deltaY = 0.0f;
 
-			msg->FindFloat("be:wheel_delta_y", &deltaY);
+			message->FindFloat("be:wheel_delta_y", &deltaY);
 
 			if (deltaY == 0.0f)
 				return;
@@ -288,10 +323,10 @@ VolumeControl::MessageReceived(BMessage* msg)
 		}
 
 		case B_MEDIA_NEW_PARAMETER_VALUE:
-			if (IsTracking())
-				break;
+			if (!IsTracking())
+				SetValue((int32)fMixerControl->Volume());
 
-			SetValue((int32)fMixerControl->Volume());
+			Invalidate();
 			break;
 
 		case B_MEDIA_SERVER_STARTED:
@@ -311,16 +346,7 @@ VolumeControl::MessageReceived(BMessage* msg)
 		}
 
 		case B_QUIT_REQUESTED:
-			Window()->MessageReceived(msg);
-			break;
-
-		case kMsgReconnectVolume:
-			_ConnectVolume();
-			if (!fMixerControl->Connected() && --fConnectRetries > 1) {
-				BMessage reconnect(kMsgReconnectVolume);
-				BMessageRunner::StartSending(this, &reconnect,
-					6000000LL / fConnectRetries, 1);
-			}
+			Window()->MessageReceived(message);
 			break;
 
 		case B_WORKSPACE_ACTIVATED:
@@ -328,8 +354,24 @@ VolumeControl::MessageReceived(BMessage* msg)
 				Invalidate();
 			break;
 
+		case kMsgToggleMute:
+			if (fMixerControl == NULL)
+				break;
+
+			fMixerControl->SetMuted(!fMixerControl->IsMuted());
+			break;
+
+		case kMsgReconnectVolume:
+			_ConnectVolume();
+			if (!fMixerControl->IsConnected() && --fConnectRetries > 1) {
+				BMessage reconnect(kMsgReconnectVolume);
+				BMessageRunner::StartSending(this, &reconnect,
+					6000000LL / fConnectRetries, 1);
+			}
+			break;
+
 		default:
-			return BView::MessageReceived(msg);
+			return BView::MessageReceived(message);
 	}
 }
 
@@ -337,7 +379,7 @@ VolumeControl::MessageReceived(BMessage* msg)
 status_t
 VolumeControl::Invoke(BMessage* message)
 {
-	if (fBeep && fOriginalValue != Value() && message == NULL) {
+	if (fMixerControl->Beep() && fOriginalValue != Value() && message == NULL) {
 		beep();
 		fOriginalValue = Value();
 	}
@@ -356,8 +398,21 @@ VolumeControl::DrawBar()
 
 	uint32 flags = be_control_look->Flags(this);
 	rgb_color base = LowColor();
-	rgb_color rightFillColor = make_color(255, 109, 38, 255);
-	rgb_color leftFillColor = make_color(116, 224, 0, 255);
+	rgb_color rightFillColor;
+	rgb_color leftFillColor;
+
+	bool isMuted = false;
+	if (fMixerControl != NULL && fMixerControl->IsConnected())
+		isMuted = fMixerControl->IsMuted();
+
+	if (isMuted) {
+		// draw shades of gray when muted
+		rightFillColor = make_color(127, 127, 127, 255); // 50% gray
+		leftFillColor = make_color(191, 191, 191, 255); // 75% gray
+	} else {
+		rightFillColor = make_color(255, 109, 38, 255); // orange
+		leftFillColor = make_color(116, 224, 0, 255); // green
+	}
 
 	int32 min, max;
 	GetLimits(&min, &max);
@@ -365,6 +420,50 @@ VolumeControl::DrawBar()
 
 	be_control_look->DrawSliderBar(view, frame, frame, base, leftFillColor,
 		rightFillColor, position, flags, Orientation());
+}
+
+
+void
+VolumeControl::DrawText()
+{
+	BRect bounds(Bounds());
+	BView* view = OffscreenView();
+	rgb_color base = view->LowColor();
+	rgb_color textColor = view->HighColor();
+	uint32 flags = be_control_look->Flags(this);
+
+	font_height fontHeight;
+	GetFontHeight(&fontHeight);
+
+	float iconWidth = 0.0f;
+
+	bool isMuted = false;
+	if (fMixerControl != NULL && fMixerControl->IsConnected())
+		isMuted = fMixerControl->IsMuted();
+
+	BString iconString;
+	if (isMuted)
+		iconString << kSpeakerWithCancellationStroke;
+	else if (Value() <= 0)
+		iconString << kSpeakerWithOneSoundWave;
+	else
+		iconString << kSpeakerWithThreeSoundWaves;
+
+	iconWidth = BControlLook::ComposeIconSize(B_MINI_ICON).Width()
+		+ be_control_look->DefaultLabelSpacing();
+	BPoint labelLoc = BPoint(0, ceilf(fontHeight.ascent));
+	be_control_look->DrawLabel(view, iconString, base, flags, labelLoc, &textColor);
+
+	if (Label() != NULL) {
+		BPoint labelLoc = BPoint(iconWidth, ceilf(fontHeight.ascent));
+		be_control_look->DrawLabel(view, Label(), base, flags, labelLoc, &textColor);
+	}
+
+	if (fText != NULL) {
+		float stringWidth = StringWidth(fText);
+		BPoint labelLoc = BPoint(bounds.right - stringWidth, ceilf(fontHeight.ascent));
+		be_control_look->DrawLabel(view, fText, base, flags, labelLoc, &textColor);
+	}
 }
 
 
@@ -396,8 +495,8 @@ VolumeControl::_ConnectVolume()
 	_DisconnectVolume();
 
 	const char* errorString = NULL;
-	float volume = 0.0;
-	fMixerControl->Connect(fMixerControl->VolumeWhich(), &volume, &errorString);
+	float volume = 0.0f;
+	fMixerControl->Connect(&volume, &errorString);
 
 	if (errorString != NULL) {
 		SetLabel(errorString);
@@ -441,4 +540,11 @@ bool
 VolumeControl::_IsReplicant() const
 {
 	return dynamic_cast<VolumeWindow*>(Window()) == NULL;
+}
+
+
+void
+VolumeControl::_Init()
+{
+	fMixerControl = new MixerControl();
 }
